@@ -107,11 +107,26 @@ def upsample_goci2_to_landsat(goci_data, landsat_data):
         
         if goci_var in goci_data:
             print(f"  上采样 GOCI2 {g_band}nm → Landsat {l_band}nm 分辨率...")
-            
+
+            # 1. 获取Landsat经纬度范围
+            lon_min, lon_max = np.nanmin(landsat_data['lon']), np.nanmax(landsat_data['lon'])
+            lat_min, lat_max = np.nanmin(landsat_data['lat']), np.nanmax(landsat_data['lat'])
+            # 2. 生成GOCI2掩码
+            mask = (
+                (goci_data['lon'] >= lon_min) & (goci_data['lon'] <= lon_max) &
+                (goci_data['lat'] >= lat_min) & (goci_data['lat'] <= lat_max)
+            )
+            # 3. 裁剪GOCI2经纬度和Rrs
+            goci_lon_crop = goci_data['lon'][mask].flatten()
+            goci_lat_crop = goci_data['lat'][mask].flatten()
+            goci_rrs_crop = goci_data[goci_var][mask].flatten()
+            # 4. 重新定义源网格
+            source_geo = geometry.SwathDefinition(lons=goci_lon_crop, lats=goci_lat_crop)
+
             # 使用高斯加权重采样
             upsampled = kd_tree.resample_gauss(
                 source_geo_def=source_geo, 
-                data=goci_data[goci_var], 
+                data=goci_rrs_crop, 
                 target_geo_def=target_geo,
                 radius_of_influence=3000,  # 影响半径3km
                 sigmas=1000,              # 高斯标准差1km
@@ -122,7 +137,6 @@ def upsample_goci2_to_landsat(goci_data, landsat_data):
             upsampled_data[landsat_var] = upsampled.astype(np.float16)
             # 同时保存原始GOCI2波段名称的映射
             upsampled_data[f"from_{goci_var}"] = landsat_var
-            
             print(f"    完成！形状：{goci_data[goci_var].shape} → {upsampled.shape}")
     
     return upsampled_data

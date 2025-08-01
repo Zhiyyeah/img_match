@@ -108,13 +108,36 @@ def upsample_goci2_to_landsat(goci_data, landsat_data):
         if goci_var in goci_data:
             print(f"  上采样 GOCI2 {g_band}nm → Landsat {l_band}nm 分辨率...")
             
-            # 使用高斯加权重采样
+            # landsat范围
+            lon_min, lon_max = np.nanmin(landsat_data['lon']), np.nanmax(landsat_data['lon'])
+            lat_min, lat_max = np.nanmin(landsat_data['lat']), np.nanmax(landsat_data['lat'])
+
+            # GOCI2原始shape
+            g_lon = goci_data['lon']
+            g_lat = goci_data['lat']
+            g_rrs = goci_data[goci_var]
+
+            # mask shape和g_lon/g_lat一致
+            mask = (g_lon >= lon_min) & (g_lon <= lon_max) & (g_lat >= lat_min) & (g_lat <= lat_max)
+
+            # 用mask索引，结果都是一维，shape完全一致
+            goci_lon_crop = g_lon[mask]
+            goci_lat_crop = g_lat[mask]
+            goci_rrs_crop = g_rrs[mask]
+
+            # 检查shape
+            assert goci_lon_crop.shape == goci_lat_crop.shape == goci_rrs_crop.shape
+
+            # SwathDefinition
+            source_geo = geometry.SwathDefinition(lons=goci_lon_crop, lats=goci_lat_crop)
+
+            # 插值
             upsampled = kd_tree.resample_gauss(
-                source_geo_def=source_geo, 
-                data=goci_data[goci_var], 
+                source_geo_def=source_geo,
+                data=goci_rrs_crop,
                 target_geo_def=target_geo,
-                radius_of_influence=3000,  # 影响半径3km
-                sigmas=1000,              # 高斯标准差1km
+                radius_of_influence=3000,
+                sigmas=1000,
                 fill_value=np.nan
             )
             
@@ -123,7 +146,7 @@ def upsample_goci2_to_landsat(goci_data, landsat_data):
             # 同时保存原始GOCI2波段名称的映射
             upsampled_data[f"from_{goci_var}"] = landsat_var
             
-            print(f"    完成！形状：{goci_data[goci_var].shape} → {upsampled.shape}")
+            print(f"    完成！形状：{goci_rrs_crop.shape} → {upsampled.shape}")
     
     return upsampled_data
 

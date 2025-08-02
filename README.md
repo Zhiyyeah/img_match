@@ -90,4 +90,4 @@ Each plot shows:
 
 ## Contributing
 
-[Add contribution guidelines here] 
+[Add contribution guidelines here]

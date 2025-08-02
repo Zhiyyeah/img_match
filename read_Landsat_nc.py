@@ -9,8 +9,7 @@ import numpy as np
 import os
 
 # 文件路径
-file_path = r"H:\LC08_L1TP_118041_20250323_20250331_02_T1\output\L8_OLI_2025_03_23_02_25_53_118041_L2W.nc"
-
+file_path = r"D:\Py_Code\SR_Imagery\LC09_L1TP_116035_20250504_20250504_02_T1\output\L9_OLI_2025_05_04_02_11_09_116035_L2W.nc"
 # Landsat 8/9 OLI波长
 wavelengths = np.array([443, 483, 561, 592, 613, 655, 865, 1609, 2201])
 rrs_variables = [f"Rrs_{wavelength}" for wavelength in wavelengths]

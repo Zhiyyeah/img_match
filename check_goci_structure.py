@@ -76,5 +76,5 @@ def explore_nc_structure(file_path):
 
 if __name__ == "__main__":
     # 检查当前使用的GOCI2文件
-    goci_file = r"D:\Py_Code\SR_Imagery\GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+    goci_file = r"D:\Py_Code\SR_Imagery\GK2B_GOCI2_L2_20250309_021530_LA_S007_AC.nc"
     explore_nc_structure(goci_file) 

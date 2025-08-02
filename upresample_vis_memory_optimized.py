@@ -169,7 +169,7 @@ def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs,
                 all_valid_data.extend(valid_data.flatten())
     
     if all_valid_data:
-        vmin, vmax = np.percentile(all_valid_data, [2, 98])
+        vmin, vmax = np.nanpercentile(all_valid_data, [0.1, 99.9])
         print(f"    动态colorbar范围: [{vmin:.6f}, {vmax:.6f}]")
         print(f"    数据统计: 最小值={np.min(all_valid_data):.6f}, 最大值={np.max(all_valid_data):.6f}")
     else:
@@ -358,7 +358,9 @@ def main(goci_file, landsat_file):
     
     # GOCI2和Landsat的波段定义
     goci_bands = [380, 412, 443, 490, 510, 555, 620, 660, 680, 709, 745, 865]
-    landsat_bands = [443, 483, 561, 592, 613, 655, 865, 1609, 2201]
+    # landsat_bands = [443, 483, 561, 592, 613, 655, 865, 1609, 2201]
+    landsat_bands = sorted([int(var.split('_')[1]) for var in nc.Dataset(landsat_file).variables if var.startswith('Rrs_')])
+    print(landsat_bands)
     
     # 找出相近的波段对
     print("\n查找相近波段对（容差±20nm）...")

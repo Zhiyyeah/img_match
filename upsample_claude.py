@@ -3,8 +3,9 @@
 """
 简化的GOCI2上采样可视化工具
 核心功能：
-1. 对GOCI2进行上采样到Landsat分辨率
-2. 可视化采样前后的对比结果
+1. 对GOCI2进行裁剪到Landsat范围
+2. 对裁剪后的GOCI2进行上采样到Landsat分辨率
+3. 可视化采样前后的对比结果
 """
 
 import numpy as np
@@ -82,6 +83,34 @@ def load_satellite_data(goci_file, landsat_file):
     return goci_data, landsat_data
 
 
+def crop_data_to_region(lon_data, lat_data, rrs_data, target_bounds):
+    """
+    Crop data to specified region while maintaining 2D structure
+    """
+    print(f"  裁剪前shape: {rrs_data.shape}")
+    
+    lon_min, lon_max, lat_min, lat_max = target_bounds
+    
+    # Find pixels within target range
+    in_range = (lon_data >= lon_min) & (lon_data <= lon_max) & (lat_data >= lat_min) & (lat_data <= lat_max)
+    
+    if np.sum(in_range) > 0:
+        # Find minimum rectangle containing all valid pixels
+        valid_rows = np.where(np.any(in_range, axis=1))[0]
+        valid_cols = np.where(np.any(in_range, axis=0))[0]
+        
+        if len(valid_rows) > 0 and len(valid_cols) > 0:
+            # Crop data while maintaining 2D structure
+            cropped_lon = lon_data[valid_rows[0]:valid_rows[-1]+1, valid_cols[0]:valid_cols[-1]+1]
+            cropped_lat = lat_data[valid_rows[0]:valid_rows[-1]+1, valid_cols[0]:valid_cols[-1]+1]
+            cropped_rrs = rrs_data[valid_rows[0]:valid_rows[-1]+1, valid_cols[0]:valid_cols[-1]+1]
+            
+            print(f"  裁剪后shape: {cropped_rrs.shape}")
+            return cropped_lon, cropped_lat, cropped_rrs, True
+    
+    return None, None, None, False
+
+
 def upsample_goci2_to_landsat(goci_data, landsat_data):
     """
     将GOCI2数据上采样到Landsat的空间分辨率
@@ -89,8 +118,13 @@ def upsample_goci2_to_landsat(goci_data, landsat_data):
     """
     print("\n执行GOCI2上采样...")
     
-    # 创建几何定义
-    source_geo = geometry.SwathDefinition(lons=goci_data['lon'], lats=goci_data['lat'])
+    # 获取Landsat的范围
+    lon_min, lon_max = np.nanmin(landsat_data['lon']), np.nanmax(landsat_data['lon'])
+    lat_min, lat_max = np.nanmin(landsat_data['lat']), np.nanmax(landsat_data['lat'])
+    target_bounds = (lon_min, lon_max, lat_min, lat_max)
+    print(f"目标范围: lon[{lon_min:.4f}, {lon_max:.4f}], lat[{lat_min:.4f}, {lat_max:.4f}]")
+    
+    # 创建目标几何定义（Landsat网格）
     target_geo = geometry.SwathDefinition(lons=landsat_data['lon'], lats=landsat_data['lat'])
     
     # 准备上采样后的数据
@@ -106,58 +140,53 @@ def upsample_goci2_to_landsat(goci_data, landsat_data):
         landsat_var = f"Rrs_{l_band}"
         
         if goci_var in goci_data:
-            print(f"  上采样 GOCI2 {g_band}nm → Landsat {l_band}nm 分辨率...")
+            print(f"\n处理波段对: GOCI2 {g_band}nm → Landsat {l_band}nm...")
             
-            # landsat范围
-            lon_min, lon_max = np.nanmin(landsat_data['lon']), np.nanmax(landsat_data['lon'])
-            lat_min, lat_max = np.nanmin(landsat_data['lat']), np.nanmax(landsat_data['lat'])
-
-            # GOCI2原始shape
-            g_lon = goci_data['lon']
-            g_lat = goci_data['lat']
-            g_rrs = goci_data[goci_var]
-
-            # mask shape和g_lon/g_lat一致
-            mask = (g_lon >= lon_min) & (g_lon <= lon_max) & (g_lat >= lat_min) & (g_lat <= lat_max)
-
-            # 用mask索引，结果都是一维，shape完全一致
-            goci_lon_crop = g_lon[mask]
-            goci_lat_crop = g_lat[mask]
-            goci_rrs_crop = g_rrs[mask]
-
-            # 检查shape
-            assert goci_lon_crop.shape == goci_lat_crop.shape == goci_rrs_crop.shape
-
-            # SwathDefinition
-            source_geo = geometry.SwathDefinition(lons=goci_lon_crop, lats=goci_lat_crop)
-
-            # 插值
-            upsampled = kd_tree.resample_gauss(
-                source_geo_def=source_geo,
-                data=goci_rrs_crop,
-                target_geo_def=target_geo,
-                radius_of_influence=3000,
-                sigmas=1000,
-                fill_value=np.nan
+            # 裁剪GOCI2数据到Landsat范围
+            cropped_lon, cropped_lat, cropped_rrs, success = crop_data_to_region(
+                goci_data['lon'], 
+                goci_data['lat'], 
+                goci_data[goci_var], 
+                target_bounds
             )
             
-            # 存储上采样结果，使用对应的Landsat波段名称
-            upsampled_data[landsat_var] = upsampled
-            # 同时保存原始GOCI2波段名称的映射
-            upsampled_data[f"from_{goci_var}"] = landsat_var
+            if not success:
+                print(f"  警告：无法裁剪GOCI2 {g_band}nm数据到目标范围")
+                upsampled_data[landsat_var] = np.full_like(landsat_data['lon'], np.nan)
+                continue
             
-            print(f"    完成！形状：{goci_rrs_crop.shape} → {upsampled.shape}")
+            # 创建裁剪后的源几何定义
+            source_geo = geometry.SwathDefinition(lons=cropped_lon, lats=cropped_lat)
+            
+            # 执行上采样
+            print(f"  执行高斯插值上采样...")
+            try:
+                upsampled = kd_tree.resample_gauss(
+                    source_geo_def=source_geo,
+                    data=cropped_rrs,
+                    target_geo_def=target_geo,
+                    radius_of_influence=3000,
+                    sigmas=1000,
+                    fill_value=np.nan
+                )
+                
+                # 存储上采样结果
+                upsampled_data[landsat_var] = upsampled
+                upsampled_data[f"from_{goci_var}"] = landsat_var
+                
+                print(f"  上采样完成！形状：{cropped_rrs.shape} → {upsampled.shape}")
+                
+            except Exception as e:
+                print(f"  上采样失败: {str(e)}")
+                upsampled_data[landsat_var] = np.full_like(landsat_data['lon'], np.nan)
     
     return upsampled_data
 
 
-def visualize_upsampling_comparison(goci_data, landsat_data, upsampled_data, band_pair, max_pixels=1000000):
+def visualize_upsampling_comparison(goci_data, landsat_data, upsampled_data, band_pair):
     """
     可视化上采样前后的对比结果
     显示：GOCI2原始图像 | Landsat参考图像 | GOCI2上采样图像
-    
-    参数:
-    max_pixels: 最大像素数，超过此值将进行降采样以避免内存问题
     """
     g_band, l_band = band_pair
     goci_var = f"Rrs_{g_band}"
@@ -197,39 +226,9 @@ def visualize_upsampling_comparison(goci_data, landsat_data, upsampled_data, ban
             # 清理数据
             cleaned_data = np.where(np.isfinite(rrs_data) & (rrs_data > 0), rrs_data, np.nan)
             
-            # 检查数据大小，如果太大则降采样
-            total_pixels = cleaned_data.size
-            if total_pixels > max_pixels:
-                # 计算降采样因子
-                downsample_factor = int(np.sqrt(total_pixels / max_pixels))
-                print(f"  数据过大 ({total_pixels:,} 像素)，降采样因子: {downsample_factor}")
-                
-                # 降采样数据
-                if lon.ndim == 2 and lat.ndim == 2:
-                    # 2D经纬度网格
-                    lon_down = lon[::downsample_factor, ::downsample_factor]
-                    lat_down = lat[::downsample_factor, ::downsample_factor]
-                    data_down = cleaned_data[::downsample_factor, ::downsample_factor]
-                else:
-                    # 1D经纬度，需要重新网格化
-                    lon_down = lon[::downsample_factor]
-                    lat_down = lat[::downsample_factor]
-                    data_down = cleaned_data[::downsample_factor, ::downsample_factor]
-                
-                print(f"  降采样后: {data_down.shape[0]}×{data_down.shape[1]} = {data_down.size:,} 像素")
-                
-                # 使用降采样后的数据
-                lon, lat, cleaned_data = lon_down, lat_down, data_down
-            
             # 判断经纬度是否为2维，如果是则直接用
             if lon.ndim == 2 and lat.ndim == 2:
-                try:
-                    im = ax.pcolormesh(lon, lat, cleaned_data, cmap='viridis', vmin=vmin, vmax=vmax, shading='auto')
-                except MemoryError:
-                    print(f"  pcolormesh内存不足，使用imshow替代...")
-                    # 如果pcolormesh失败，使用imshow
-                    extent = [lon.min(), lon.max(), lat.min(), lat.max()]
-                    im = ax.imshow(cleaned_data, extent=extent, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto', origin='upper')
+                im = ax.pcolormesh(lon, lat, cleaned_data, cmap='viridis', vmin=vmin, vmax=vmax, shading='auto')
             else:
                 # 如果是一维的，退回到imshow+extent
                 extent = [lon.min(), lon.max(), lat.min(), lat.max()]
@@ -270,7 +269,7 @@ def main(goci_file, landsat_file):
     主函数：执行GOCI2上采样并可视化结果
     """
     print("="*60)
-    print("GOCI2上采样可视化工具")
+    print("GOCI2上采样可视化工具（带裁剪功能）")
     print("="*60)
     
     # 1. 加载数据
@@ -300,7 +299,7 @@ def main(goci_file, landsat_file):
         )
         
         # 保存图像
-        output_file = f'goci2_upsampling_comparison_{g_band}to{l_band}nm_lonlat_lim.png'
+        output_file = f'goci2_upsampling_comparison_{g_band}to{l_band}nm_cropped.png'
         fig.savefig(output_file, dpi=500, bbox_inches='tight')
         print(f"  保存图像: {output_file}")
         

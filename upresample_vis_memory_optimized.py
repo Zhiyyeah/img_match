@@ -159,15 +159,22 @@ def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs,
         (f'GOCI2 upsampled\n{g_band}→{l_band}nm (30m)', landsat_lon, landsat_lat, upsampled_rrs, 2)
     ]
     
-    # 计算统一的颜色范围
+    # 计算统一的colorbar范围 - 不改变数据，只调整colorbar显示
     all_valid_data = []
     for _, lon, lat, data, _ in datasets:
         if data is not None:
-            valid_data = data[np.isfinite(data) & (data > 0)]
+            # 只过滤有限值，不改变数据范围
+            valid_data = data[np.isfinite(data)]
             if len(valid_data) > 0:
                 all_valid_data.extend(valid_data.flatten())
     
-    vmin, vmax = np.percentile(all_valid_data, [2, 98]) if all_valid_data else (0, 0.05)
+    if all_valid_data:
+        vmin, vmax = np.percentile(all_valid_data, [2, 98])
+        print(f"    动态colorbar范围: [{vmin:.6f}, {vmax:.6f}]")
+        print(f"    数据统计: 最小值={np.min(all_valid_data):.6f}, 最大值={np.max(all_valid_data):.6f}")
+    else:
+        vmin, vmax = 0, 0.05
+        print(f"    使用默认colorbar范围: [{vmin}, {vmax}]")
     
     # 获取Landsat范围用于画框
     landsat_lon_min, landsat_lon_max = np.nanmin(landsat_lon), np.nanmax(landsat_lon)
@@ -178,8 +185,8 @@ def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs,
         ax = axes[idx]
         
         if data is not None:
-            # 清理数据
-            cleaned_data = np.where(np.isfinite(data) & (data > 0), data, np.nan)
+            # 清理数据 - 只处理NaN值，不改变有效数据
+            cleaned_data = np.where(np.isfinite(data), data, np.nan)
             
             # 判断经纬度是否为2维
             if lon.ndim == 2 and lat.ndim == 2:
@@ -206,6 +213,9 @@ def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs,
             # 添加颜色条
             cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             cbar.set_label('Rrs (sr⁻¹)', fontsize=10)
+            
+            # 验证colorbar范围设置正确
+            print(f"    子图{idx} colorbar范围: [{im.norm.vmin:.6f}, {im.norm.vmax:.6f}]")
             
             # 设置标题和标签
             ax.set_title(title, fontsize=12, fontweight='bold')
@@ -388,8 +398,8 @@ def main(goci_file, landsat_file):
 # 使用示例
 if __name__ == "__main__":
     # 输入文件路径
-    goci_file = r"H:\GK2B_GOCI2_L2_20250323_021530_LA_S009_AC.nc"
-    landsat_file = r"H:\LC08_L1TP_118041_20250323_20250331_02_T1\output\L8_OLI_2025_03_23_02_25_53_118041_L2W.nc"
+    goci_file = r"D:\Py_Code\SR_Imagery\GK2B_GOCI2_L2_20250309_021530_LA_S007_AC.nc"
+    landsat_file = r"D:\Py_Code\SR_Imagery\LC08_L1TP_116036_20250309_20250324_02_T1\output\L8_OLI_2025_03_09_02_11_42_116036_L2W.nc"
     
     # 执行分波段上采样和可视化
     main(goci_file, landsat_file) 

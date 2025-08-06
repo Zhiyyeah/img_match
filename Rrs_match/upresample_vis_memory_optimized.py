@@ -71,6 +71,20 @@ def load_goci_band_data(goci_file, g_band):
         if var_name in rrs_group.variables:
             rrs_data = rrs_group.variables[var_name][:]
             print(f"    GOCI2 {var_name} 形状: {rrs_data.shape}")
+            
+            # 添加数据质量检查
+            valid_data = rrs_data[np.isfinite(rrs_data)]
+            if len(valid_data) > 0:
+                print(f"    GOCI2 {var_name} 数据范围: [{np.min(valid_data):.6f}, {np.max(valid_data):.6f}]")
+                print(f"    GOCI2 {var_name} 均值: {np.mean(valid_data):.6f}")
+                # 检查异常值
+                small_count = np.sum(valid_data < -0.1)
+                large_count = np.sum(valid_data > 1)
+                if small_count > 0:
+                    print(f"    警告：发现 {small_count} 个小于-0.1的值")
+                if large_count > 0:
+                    print(f"    警告：发现 {large_count} 个大于1的值")
+            
             return lon, lat, rrs_data
         else:
             print(f"    警告：GOCI2中未找到 {var_name}")
@@ -88,6 +102,20 @@ def load_landsat_band_data(landsat_file, l_band):
         if var_name in dataset.variables:
             rrs_data = dataset.variables[var_name][:]
             print(f"    Landsat {var_name} 形状: {rrs_data.shape}")
+            
+            # 添加数据质量检查
+            valid_data = rrs_data[np.isfinite(rrs_data)]
+            if len(valid_data) > 0:
+                print(f"    Landsat {var_name} 数据范围: [{np.min(valid_data):.6f}, {np.max(valid_data):.6f}]")
+                print(f"    Landsat {var_name} 均值: {np.mean(valid_data):.6f}")
+                # 检查异常值
+                small_count = np.sum(valid_data < 0)
+                large_count = np.sum(valid_data > 1)
+                if small_count > 0:
+                    print(f"    警告：发现 {small_count} 个小于-0.1的值")
+                if large_count > 0:
+                    print(f"    警告：发现 {large_count} 个大于1的值")
+            
             return rrs_data
         else:
             print(f"    警告：Landsat中未找到 {var_name}")
@@ -190,13 +218,17 @@ def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs,
             # 清理数据 - 只处理NaN值，不改变有效数据
             cleaned_data = np.where(np.isfinite(data), data, np.nan)
             
+            # 设置NaN为白色
+            cmap = plt.get_cmap('viridis').copy()
+            cmap.set_bad(color='white')
+            
             # 判断经纬度是否为2维
             if lon.ndim == 2 and lat.ndim == 2:
-                im = ax.pcolormesh(lon, lat, cleaned_data, cmap='viridis', vmin=vmin, vmax=vmax, shading='auto')
+                im = ax.pcolormesh(lon, lat, cleaned_data, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto')
             else:
                 # 如果是一维的，使用imshow
                 extent = [lon.min(), lon.max(), lat.min(), lat.max()]
-                im = ax.imshow(cleaned_data, extent=extent, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto', origin='upper')
+                im = ax.imshow(cleaned_data, extent=extent, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto', origin='upper')
             
             # 在GOCI2原始图中画红框表示Landsat范围
             if idx == 0:  # GOCI2原始图
@@ -226,18 +258,34 @@ def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs,
             ax.tick_params(axis='x', labelrotation=30)
             
             # 添加统计信息（删除覆盖率计算）
-            valid_mask = np.isfinite(cleaned_data)
+            # 过滤异常值：Rrs应该在0-1之间，排除明显异常的值
+            valid_mask = np.isfinite(cleaned_data) & (cleaned_data >= -0.1) & (cleaned_data <= 1)
             if np.sum(valid_mask) > 0:
                 mean_val = np.mean(cleaned_data[valid_mask])
+                min_val = np.min(cleaned_data[valid_mask])
+                max_val = np.max(cleaned_data[valid_mask])
                 
                 info_text = (f'mean: {mean_val:.4f}\n'
-                           f'shape: {cleaned_data.shape[0]}×{cleaned_data.shape[1]}')
-                
-                ax.text(0.02, 0.98, info_text, 
-                       transform=ax.transAxes, 
-                       va='top', 
-                       fontsize=8,
-                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                           f'range: [{min_val:.4f}, {max_val:.4f}]')
+            else:
+                # 如果没有有效值，显示原始统计信息
+                all_valid = np.isfinite(cleaned_data)
+                if np.sum(all_valid) > 0:
+                    mean_val = np.mean(cleaned_data[all_valid])
+                    min_val = np.min(cleaned_data[all_valid])
+                    max_val = np.max(cleaned_data[all_valid])
+                    
+                    info_text = (f'mean: {mean_val:.4f} (异常)\n'
+                               f'range: [{min_val:.4f}, {max_val:.4f}]')
+                else:
+                    info_text = f'no valid data\nshape: {cleaned_data.shape[0]}×{cleaned_data.shape[1]}'
+            
+            # 在左上角添加统计信息
+            ax.text(0.02, 0.98, info_text, 
+                   transform=ax.transAxes, 
+                   va='top', 
+                   fontsize=8,
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
     plt.tight_layout()
     
@@ -429,8 +477,8 @@ def main(goci_file, landsat_file):
 # 使用示例
 if __name__ == "__main__":
     # 输入文件路径
-    goci_file = r"D:\Py_Code\SR_Imagery\GK2B_GOCI2_L2_20250504_021530_LA_S007_AC.nc"
-    landsat_file = r"D:\Py_Code\SR_Imagery\LC09_L1TP_116035_20250504_20250504_02_T1\output\L9_OLI_2025_05_04_02_11_09_116035_L2W.nc"
+    goci_file = r"D:\Py_Code\SR_Imagery\GK2B_GOCI2_L2_20250323_021530_LA_S009_AC.nc"
+    landsat_file = r"D:\Py_Code\SR_Imagery\LC08_L1TP_118041_20250323_20250331_02_T1\output\L8_OLI_2025_03_23_02_25_53_118041_L2W.nc"
     
     # 执行分波段上采样和可视化
     main(goci_file, landsat_file) 

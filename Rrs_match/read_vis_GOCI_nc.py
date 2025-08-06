@@ -91,9 +91,9 @@ rgb_image = create_rgb_image(rrs_data, wavelengths)
 # 显示RGB图像
 plt.figure(figsize=(12, 10))
 plt.imshow(rgb_image)
-plt.title('GOCI-II Rrs RGB合成图像\n(R:660nm, G:555nm, B:443nm)')
-plt.xlabel('像素列')
-plt.ylabel('像素行')
+plt.title('GOCI-II Rrs RGB composite image\n(R:660nm, G:555nm, B:443nm)')
+plt.xlabel('pixel column')
+plt.ylabel('pixel row')
 plt.axis('equal')
 plt.tight_layout()
 plt.show()
@@ -103,20 +103,20 @@ fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
 # 显示RGB分量
 im1 = axes[0,0].imshow(rgb_image[:,:,0], cmap='Reds')
-axes[0,0].set_title('红色分量 (660nm)')
+axes[0,0].set_title('red band (660nm)')
 plt.colorbar(im1, ax=axes[0,0])
 
 im2 = axes[0,1].imshow(rgb_image[:,:,1], cmap='Greens')
-axes[0,1].set_title('绿色分量 (555nm)')
+axes[0,1].set_title('green band (555nm)')
 plt.colorbar(im2, ax=axes[0,1])
 
 im3 = axes[1,0].imshow(rgb_image[:,:,2], cmap='Blues')
-axes[1,0].set_title('蓝色分量 (443nm)')
+axes[1,0].set_title('blue band (443nm)')
 plt.colorbar(im3, ax=axes[1,0])
 
 # RGB合成
 axes[1,1].imshow(rgb_image)
-axes[1,1].set_title('RGB合成')
+axes[1,1].set_title('RGB composite image')
 
 plt.tight_layout()
 plt.show()

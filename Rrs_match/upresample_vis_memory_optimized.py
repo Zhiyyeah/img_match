@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 from pyresample import geometry, kd_tree
 import gc
 import warnings
+import os
+from datetime import datetime
 warnings.filterwarnings('ignore')
 
 
@@ -141,7 +143,7 @@ def upsample_single_band(goci_lon, goci_lat, goci_rrs, landsat_lon, landsat_lat,
 
 def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs, 
                                    landsat_lon, landsat_lat, landsat_rrs,
-                                   upsampled_rrs, g_band, l_band):
+                                   upsampled_rrs, g_band, l_band, output_dir, date_str):
     """
     可视化单个波段的对比结果
     """
@@ -238,10 +240,16 @@ def visualize_single_band_comparison(goci_lon, goci_lat, goci_rrs,
                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
     plt.tight_layout()
+    
+    # 保存图像到指定目录
+    output_file = os.path.join(output_dir, f'{date_str}_goci2_upsampling_{g_band}to{l_band}nm.png')
+    fig.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"    保存图像: {output_file}")
+    
     return fig
 
 
-def process_single_band_pair(goci_file, landsat_file, landsat_data, band_pair, output_nc_file):
+def process_single_band_pair(goci_file, landsat_file, landsat_data, band_pair, output_nc_file, output_dir, date_str):
     """
     处理单个波段对：加载、上采样、可视化、保存、释放内存
     """
@@ -274,15 +282,10 @@ def process_single_band_pair(goci_file, landsat_file, landsat_data, band_pair, o
         fig = visualize_single_band_comparison(
             goci_lon, goci_lat, goci_rrs,
             landsat_data['lon'], landsat_data['lat'], landsat_rrs,
-            upsampled_rrs, g_band, l_band
+            upsampled_rrs, g_band, l_band, output_dir, date_str
         )
         
-        # 5. 保存图像
-        output_file = f'goci2_upsampling_{g_band}to{l_band}nm_memory_optimized.png'
-        fig.savefig(output_file, dpi=300, bbox_inches='tight')
-        print(f"  保存图像: {output_file}")
-        
-        # 6. 关闭图形释放内存
+        # 5. 关闭图形释放内存
         plt.close(fig)
         
         # 7. 返回上采样结果用于保存到多波段文件
@@ -303,13 +306,14 @@ def process_single_band_pair(goci_file, landsat_file, landsat_data, band_pair, o
         print(f"  内存已清理")
 
 
-def save_multiband_nc(output_nc_file, landsat_data, band_results):
+def save_multiband_nc(output_nc_file, landsat_data, band_results, output_dir, date_str):
     """
     保存多波段nc文件
     """
-    print(f"\n保存多波段nc文件: {output_nc_file}")
+    output_nc_path = os.path.join(output_dir, f'goci2_upsampled_multiband_{date_str}.nc')
+    print(f"\n保存多波段nc文件: {output_nc_path}")
     
-    with nc.Dataset(output_nc_file, 'w') as dataset:
+    with nc.Dataset(output_nc_path, 'w') as dataset:
         # 创建维度
         dataset.createDimension('y', landsat_data['lon'].shape[0])
         dataset.createDimension('x', landsat_data['lon'].shape[1])
@@ -346,6 +350,7 @@ def save_multiband_nc(output_nc_file, landsat_data, band_results):
         dataset.history = 'Created by upresample_vis_memory_optimized.py'
     
     print(f"  多波段nc文件保存完成！")
+    return output_nc_path
 
 
 def main(goci_file, landsat_file):
@@ -355,6 +360,29 @@ def main(goci_file, landsat_file):
     print("="*60)
     print("内存优化的GOCI2上采样可视化工具")
     print("="*60)
+    
+    # 从文件名中提取日期
+    goci_filename = os.path.basename(goci_file)
+    # 假设文件名格式包含日期，如 GK2B_GOCI2_L2_20250309_021530_LA_S007_AC.nc
+    date_match = None
+    for part in goci_filename.split('_'):
+        if len(part) == 8 and part.isdigit():
+            date_match = part
+            break
+    
+    if date_match is None:
+        # 如果没有找到日期，使用当前日期
+        date_match = "未找到日期"
+        print(f"警告：无法从文件名提取日期，文件名: {goci_filename}")
+    
+    # 创建输出目录（在当前Python文件同级目录下）
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, f"{date_match}_match")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"创建输出目录: {output_dir}")
+    else:
+        print(f"输出目录已存在: {output_dir}")
     
     # GOCI2和Landsat的波段定义
     goci_bands = [380, 412, 443, 490, 510, 555, 620, 660, 680, 709, 745, 865]
@@ -384,24 +412,25 @@ def main(goci_file, landsat_file):
     # 逐个处理波段对
     for i, band_pair in enumerate(band_pairs, 1):
         print(f"\n进度: {i}/{len(band_pairs)}")
-        result = process_single_band_pair(goci_file, landsat_file, landsat_data, band_pair, output_nc_file)
+        result = process_single_band_pair(goci_file, landsat_file, landsat_data, band_pair, output_nc_file, output_dir, date_match)
         band_results.append(result)
     
     # 保存多波段nc文件
-    save_multiband_nc(output_nc_file, landsat_data, band_results)
+    output_nc_path = save_multiband_nc(output_nc_file, landsat_data, band_results, output_dir, date_match)
     
     print(f"\n{'='*60}")
     print("所有波段对处理完成！")
     print(f"共处理了 {len(band_pairs)} 个波段对")
-    print(f"多波段nc文件: {output_nc_file}")
+    print(f"输出目录: {output_dir}")
+    print(f"多波段nc文件: {output_nc_path}")
     print("="*60)
 
 
 # 使用示例
 if __name__ == "__main__":
     # 输入文件路径
-    goci_file = r"D:\Py_Code\SR_Imagery\GK2B_GOCI2_L2_20250309_021530_LA_S007_AC.nc"
-    landsat_file = r"D:\Py_Code\SR_Imagery\LC08_L1TP_116036_20250309_20250324_02_T1\output\L8_OLI_2025_03_09_02_11_42_116036_L2W.nc"
+    goci_file = r"D:\Py_Code\SR_Imagery\GK2B_GOCI2_L2_20250504_021530_LA_S007_AC.nc"
+    landsat_file = r"D:\Py_Code\SR_Imagery\LC09_L1TP_116035_20250504_20250504_02_T1\output\L9_OLI_2025_05_04_02_11_09_116035_L2W.nc"
     
     # 执行分波段上采样和可视化
     main(goci_file, landsat_file) 

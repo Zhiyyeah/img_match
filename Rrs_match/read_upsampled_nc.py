@@ -12,6 +12,8 @@ import numpy as np
 import netCDF4 as nc
 import matplotlib.pyplot as plt
 import warnings
+import os
+from datetime import datetime
 warnings.filterwarnings('ignore')
 
 
@@ -51,7 +53,7 @@ def read_upsampled_nc(file_path):
         return variables_info
 
 
-def visualize_bands_separately(variables_info, output_prefix='upsampled_analysis'):
+def visualize_bands_separately(variables_info, output_prefix='upsampled_analysis', output_dir=None, date_str=None):
     """
     分波段可视化数据，每个波段单独设置colorbar
     """
@@ -127,7 +129,10 @@ def visualize_bands_separately(variables_info, output_prefix='upsampled_analysis
         plt.tight_layout()
         
         # 保存图像
-        output_file = f'{output_prefix}_{var_name}.png'
+        if output_dir and date_str:
+            output_file = os.path.join(output_dir, f'{output_prefix}_{var_name}_{date_str}.png')
+        else:
+            output_file = f'{output_prefix}_{var_name}.png'
         fig.savefig(output_file, dpi=300, bbox_inches='tight')
         print(f"    保存图像: {output_file}")
         
@@ -175,6 +180,28 @@ def main():
     # 文件路径
     nc_file = 'goci2_upsampled_multiband.nc'
     
+    # 从文件名中提取日期
+    date_match = None
+    if os.path.exists(nc_file):
+        # 尝试从nc文件名中提取日期
+        for part in nc_file.split('_'):
+            if len(part) == 8 and part.isdigit():
+                date_match = part
+                break
+    
+    if date_match is None:
+        # 如果没有找到日期，使用当前日期
+        date_match = datetime.now().strftime('%Y%m%d')
+        print(f"警告：无法从文件名提取日期，使用当前日期: {date_match}")
+    
+    # 创建输出目录
+    output_dir = f"{date_match}_match"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"创建输出目录: {output_dir}")
+    else:
+        print(f"输出目录已存在: {output_dir}")
+    
     try:
         # 1. 读取nc文件
         variables_info = read_upsampled_nc(nc_file)
@@ -183,10 +210,11 @@ def main():
         analyze_data_quality(variables_info)
         
         # 3. 生成分波段可视化
-        visualize_bands_separately(variables_info)
+        visualize_bands_separately(variables_info, output_dir=output_dir, date_str=date_match)
         
         print(f"\n{'='*60}")
         print("文件读取和分析完成！")
+        print(f"输出目录: {output_dir}")
         print("="*60)
         
     except FileNotFoundError:

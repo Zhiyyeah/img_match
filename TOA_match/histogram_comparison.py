@@ -329,10 +329,10 @@ def main():
         print('现在是在mac上')
 
     else:  # 默认服务器路径（假设是 Linux）
-        goci_file = "/home/username/project/SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+        goci_file = "/public/home/zyye/SR/Image_match_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
         landsat_file = "/home/username/project/SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/radiance_calibrated/LC09_L1TP_116035_20250504_20250504_02_T1_B1_radiance.tif"
         print('现在是在服务器上')
-        
+
     print(f"当前系统: {system_type}")
     
     

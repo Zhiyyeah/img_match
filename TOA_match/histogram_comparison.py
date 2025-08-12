@@ -321,15 +321,18 @@ def main():
     if system_type == "Windows":
         goci_file = r"D:\Py_Code\SR_Imagery\GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
         landsat_file = r"D:\Py_Code\SR_Imagery\LC09_L1TP_116035_20250504_20250504_02_T1\radiance_calibrated\LC09_L1TP_116035_20250504_20250504_02_T1_B1_radiance.tif"
+        print('现在是在windows上')
 
     elif system_type == "Darwin":  # macOS
         goci_file = "/Users/zy/python_code/My_Git/SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
         landsat_file = "/Users/zy/python_code/My_Git/SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/radiance_calibrated/LC09_L1TP_116035_20250504_20250504_02_T1_B1_radiance.tif"
+        print('现在是在mac上')
 
     else:  # 默认服务器路径（假设是 Linux）
         goci_file = "/home/username/project/SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
         landsat_file = "/home/username/project/SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/radiance_calibrated/LC09_L1TP_116035_20250504_20250504_02_T1_B1_radiance.tif"
-
+        print('现在是在服务器上')
+        
     print(f"当前系统: {system_type}")
     
     

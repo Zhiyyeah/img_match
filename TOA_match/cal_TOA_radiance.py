@@ -13,12 +13,24 @@ import os
 import re
 import numpy as np
 import rasterio
+import platform
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.patches import Rectangle
 
 # === 用户路径（按需修改） ===
-root = r"D:\Py_Code\SR_Imagery\LC09_L1TP_116035_20250504_20250504_02_T1"
+
+system_type = platform.system()
+
+if system_type == "Windows":
+    root = r"D:\Py_Code\SR_Imagery\LC09_L1TP_116035_20250504_20250504_02_T1"
+
+elif system_type == "Darwin":
+    root = "/Users/zy/Python_code/My_Git/SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1"
+
+else:
+    root = "/public/home/zyye/SR/Image_match_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1"
+print(f"当前系统: {system_type}")
 
 def find_mtl_path(folder):
     for fn in os.listdir(folder):

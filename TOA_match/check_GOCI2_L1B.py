@@ -1,5 +1,6 @@
 import netCDF4 as nc
 import numpy as np
+import platform
 
 def analyze_goci2_file(file_path):
     """
@@ -190,7 +191,14 @@ def list_variables_by_group(file_path):
 
 if __name__ == "__main__":
     # 指定文件路径
-    file_path = r"D:\Py_Code\SR_Imagery\GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+    system_type = platform.system()
+    if system_type == "Windows":
+        file_path = r"D:\Py_Code\SR_Imagery\GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+    elif system_type == "Darwin":  # macOS
+        file_path = "/Users/zy/python_code/My_Git/SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+    else:  # Linux 服务器
+        file_path = "/public/home/zyye/SR/Image_match_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+
     
     print("🌊 GOCI2 L1B NetCDF文件分析工具")
     print("=" * 80)

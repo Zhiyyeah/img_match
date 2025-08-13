@@ -1,5 +1,6 @@
 import h5py
 import os
+import platform
 
 def check_with_h5py(file_path):
     """
@@ -48,5 +49,14 @@ def check_with_h5py(file_path):
         traceback.print_exc()
 
 if __name__ == "__main__":
-    file_path = r"D:\Py_Code\SR_Imagery\GK2B_GOCI2_L2_20250504_021530_LA_S007_AC.nc"
+    system_type = platform.system()
+    if system_type == "Windows":
+        pass
+        #file_path = r"D:\Py_Code\SR_Imagery\GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+    elif system_type == "Darwin":  # macOS
+        file_path = "/Users/zy/Python_code/My_Git/SR_Imagery/GK2B_GOCI2_L2_20250504_021530_LA_S007_AC.nc"
+    else:  # Linux 服务器
+        pass
+        #file_path = "/public/home/zyye/SR/Image_match_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+
     check_with_h5py(file_path) 

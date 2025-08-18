@@ -190,14 +190,8 @@ def list_variables_by_group(file_path):
         print(f"❌ 错误: {str(e)}")
 
 if __name__ == "__main__":
-    # 指定文件路径
-    system_type = platform.system()
-    if system_type == "Windows":
-        file_path = r"D:\Py_Code\SR_Imagery\GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
-    elif system_type == "Darwin":  # macOS
-        file_path = "/Users/zy/python_code/My_Git/SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
-    else:  # Linux 服务器
-        file_path = "/public/home/zyye/SR/Image_match_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+
+    file_path = "SR_Imagery\GK2B_GOCI2_L2_20250504_021530_LA_S007_AC.nc"
 
     
     print("🌊 GOCI2 L1B NetCDF文件分析工具")

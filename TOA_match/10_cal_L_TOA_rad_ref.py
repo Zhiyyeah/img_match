@@ -74,15 +74,7 @@ def main():
     mode = "rad"   # "ref" -> 反射率；"rad" -> 辐亮度
 
     # ====== 系统路径设置 ======
-    system_type = platform.system()
-    if system_type == "Windows":
-        root = r"D:\Py_Code\SR_Imagery\LC09_L1TP_116035_20250504_20250504_02_T1"
-    elif system_type == "Darwin":
-        root = "/Users/zy/Python_code/My_Git/SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1"
-    else:
-        root = "/public/home/zyye/SR/Image_match_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1"
-
-    print(f"当前系统: {system_type}")
+    root = "SR/Image_match_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1"
     print(f"数据目录: {root}")
     print(f"计算模式: {mode}")
 

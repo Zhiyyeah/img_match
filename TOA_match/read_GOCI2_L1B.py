@@ -43,23 +43,13 @@ def main():
         g = src.groups["geophysical_data"]
         n = src.groups["navigation_data"]
 
-        # 读取 2D 坐标（若为 1D 则网格化）
-        lat = np.array(n.variables["latitude"][:])
-        lon = np.array(n.variables["longitude"][:])
-        if lat.ndim == 1 and lon.ndim == 1:
-            lon2d, lat2d = np.meshgrid(lon, lat)
-        elif lat.ndim == 2 and lon.ndim == 2:
-            lat2d, lon2d = lat, lon
-        else:
-            # 其他组合尽量容错
-            if lat.ndim == 2 and lon.ndim == 1:
-                lon2d = np.tile(lon[None, :], (lat.shape[0], 1))
-                lat2d = lat
-            elif lat.ndim == 1 and lon.ndim == 2:
-                lat2d = np.tile(lat[:, None], (1, lon.shape[1]))
-                lon2d = lon
-            else:
-                raise RuntimeError("无法统一 latitude/longitude 为 2D。")
+        # 读取 2D 坐标
+        lat2d = np.array(n.variables["latitude"][:])
+        lon2d = np.array(n.variables["longitude"][:])
+        
+        # 确保坐标是二维的
+        if lat2d.ndim != 2 or lon2d.ndim != 2:
+            raise RuntimeError("latitude/longitude 必须是二维数组")
 
         ny, nx = lat2d.shape
 

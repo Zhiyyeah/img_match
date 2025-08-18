@@ -74,7 +74,7 @@ def main():
     mode = "rad"   # "ref" -> 反射率；"rad" -> 辐亮度
 
     # ====== 系统路径设置 ======
-    root = "SR/Image_match_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1"
+    root = "SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1"
     print(f"数据目录: {root}")
     print(f"计算模式: {mode}")
 

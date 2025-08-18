@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # 文件路径
-file_path = "SR_Imagery\GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+file_path = "SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
 
 # 读取文件
 with nc.Dataset(file_path, 'r') as dataset:

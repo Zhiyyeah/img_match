@@ -22,9 +22,9 @@ from netCDF4 import Dataset
 import rasterio
 
 # ======== 路径（按需修改） ========
-GOCI_NC = "goci_subset_5bands.nc"
+GOCI_NC = "goci_subset_5bands_rectangle.nc"
 LANDSAT_TIF = "SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/LC09_L1TP_116035_20250504_20250504_02_T1_TOA_RAD_B1-2-3-4-5.tif"
-OUT_DIR_FIG = "figs"
+OUT_DIR_FIG = "figs_rectangle"
 # =================================
 
 # GOCI 波段名映射（裁剪NC里保留的是3/4/6/8/12）

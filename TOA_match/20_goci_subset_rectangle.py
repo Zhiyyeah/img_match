@@ -1,214 +1,275 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-用 Landsat footprint（多边形，EPSG:4326）裁剪 GOCI-2 L1B（保留 3、4、6、8、12 波段）
-- 步骤：dataset_mask -> shapes -> transform_geom -> bbox 窗口 -> 多边形掩膜
-- 不重采样；多边形外像元写为 _FillValue
+按 Landsat footprint 多边形精确裁剪 GOCI-2 L1B（弯曲网格）
+- 像元级点测：按 (lon,lat) 判断是否落入多边形
+- 输出为：紧凑包络（仅包含 inside=True 的最小行列范围）+ 多边形外写为 _FillValue
+- 删除 scale_factor/add_offset 等缩放属性，避免读出时“二次缩放”
+- 附带写出 mask/inside_mask 供后续统计与匹配
+- 可选：显示叠加多边形与 inside 掩膜分布（SHOW_PLOT）
 """
 
 import os
 import numpy as np
 from netCDF4 import Dataset
+from matplotlib.path import Path
 import rasterio
 from rasterio.features import shapes
 from rasterio.warp import transform_geom
-from matplotlib.path import Path
+import matplotlib.pyplot as plt
+import numpy.ma as ma
 
-# ============== 配置区域（按需修改） ==============
-GOCI_NC     = r"SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
-LANDSAT_TIF = r"SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/LC09_L1TP_116035_20250504_20250504_02_T1_B1.TIF"
-OUT_NC      = r"./goci_subset_5bands_polygon.nc"
-
-# 1-based 波段索引（GOCI-2 L1B 变量名映射见下）
-KEEP_INDICES = [3, 4, 6, 8, 12]
-
-# 可选：footprint 顶点抽稀阈值（度），用于加速多边形判定；设为 None 不抽稀
-SIMPLIFY_TOL_DEG = 0.00030  # ~33 m；None 表示不抽稀
-# 是否生成一个简单的质检图（英文），叠加 footprint 与掩膜轮廓
-MAKE_QC_PLOT = True
-# ===============================================
-
-# GOCI 变量名映射
+# -------- 常量（波段选择与命名映射） --------
+KEEP_INDICES = [3, 4, 6, 8, 12]  # 443, 490, 555, 660, 865 nm
 BAND_INDEX_TO_NAME = {
     1: "L_TOA_380",  2: "L_TOA_412",  3: "L_TOA_443",  4: "L_TOA_490",
     5: "L_TOA_510",  6: "L_TOA_555",  7: "L_TOA_620",  8: "L_TOA_660",
     9: "L_TOA_680", 10: "L_TOA_709", 11: "L_TOA_745", 12: "L_TOA_865",
 }
 
-def extract_footprint_polygons_wgs84(tif_path: str):
+def safe_copy_ncattrs_without_scaling(src_var, dst_var):
     """
-    从 Landsat 影像提取 footprint 外多边形（列表，每个为闭合的 [lon,lat] 数组）
-    需要影像带有 nodata/alpha；否则得到的将近似为矩形。
+    复制 netCDF 变量属性到新变量，跳过保留属性和缩放相关属性
+    （我们写入的是已解包的 float 真值，不能再携带 scale_factor/add_offset）
+    """
+    drop = {
+        "name", "_FillValue",
+        "scale_factor", "add_offset",
+        "valid_min", "valid_max", "valid_range", "_Unsigned",
+        # 这些是 Variable 对象属性或由库管理的，不应设置
+        "dimensions", "dtype", "data_model", "disk_format", "path", "parent",
+        "ndim", "mask", "scale", "cmptypes", "vltypes", "enumtypes",
+        "file_format", "always_mask",
+    }
+    for att in src_var.ncattrs():
+        if att in drop:
+            continue
+        try:
+            dst_var.setncattr(att, src_var.getncattr(att))
+        except Exception:
+            pass
+
+def extract_footprint_lonlat(tif_path: str, to_crs: str = "EPSG:4326"):
+    """
+    从 Landsat TIF 提取 footprint（外环），转换到 WGS84，经闭合返回 (lon, lat)。
+    兼容旧版 rasterio（不使用 densify_pts）。
     """
     with rasterio.open(tif_path) as src:
-        mask = src.dataset_mask()  # 0=无效, 255=有效
-        geoms = [
-            transform_geom(src.crs, "EPSG:4326", geom, precision=10)
-            for geom, val in shapes(mask, mask=(mask > 0), transform=src.transform)
-            if val
-        ]
+        m = src.dataset_mask().astype(np.uint8)
+        geoms = []
+        for geom, val in shapes(m, mask=(m > 0), transform=src.transform):
+            if val:
+                geoms.append(transform_geom(src.crs, to_crs, geom, precision=10))
+    if not geoms:
+        raise RuntimeError("未从掩膜中提取到有效 footprint。")
 
-    if len(geoms) == 0:
-        raise RuntimeError("未从掩膜中提取到 footprint；请确认 TIF 带有 nodata/alpha。")
+    def outer_ring(g):
+        if g["type"] == "Polygon":
+            return np.asarray(g["coordinates"][0])
+        elif g["type"] == "MultiPolygon":
+            rings = [np.asarray(poly[0]) for poly in g["coordinates"]]
+            return rings[np.argmax([r.shape[0] for r in rings])]
+        else:
+            raise ValueError(f"不支持的几何类型: {g['type']}")
 
-    polys = []
-    for g in geoms:
-        ring = np.asarray(g["coordinates"][0], dtype=float)  # exterior
-        # 闭合
-        if not np.allclose(ring[0], ring[-1]):
-            ring = np.vstack([ring, ring[0]])
-        # 可选：抽稀，减少顶点数，加速 contains_points
-        if SIMPLIFY_TOL_DEG is not None and SIMPLIFY_TOL_DEG > 0:
-            ring = _decimate_ring(ring, SIMPLIFY_TOL_DEG)
-        polys.append(ring)
-    return polys
+    rings = [outer_ring(g) for g in geoms]
+    ring = rings[np.argmax([r.shape[0] for r in rings])]
+    lon, lat = ring[:, 0], ring[:, 1]
+    if lon[0] != lon[-1] or lat[0] != lat[-1]:
+        lon = np.r_[lon, lon[0]]
+        lat = np.r_[lat, lat[0]]
+    return lon, lat
 
-def _decimate_ring(ring_lonlat: np.ndarray, tol_deg: float) -> np.ndarray:
-    """简单抽稀：保留相邻点经纬差超过阈值的点，保持闭合。"""
-    lon, lat = ring_lonlat[:, 0], ring_lonlat[:, 1]
-    keep = [0]
-    for i in range(1, len(lon) - 1):
-        if max(abs(lon[i] - lon[keep[-1]]), abs(lat[i] - lat[keep[-1]])) >= tol_deg:
-            keep.append(i)
-    keep.append(len(lon) - 1)  # 闭合点
-    return ring_lonlat[keep]
+def clip_goci_by_polygon(
+    goci_nc_path: str,
+    out_nc_path: str,
+    lon_ring: np.ndarray,
+    lat_ring: np.ndarray,
+    keep_indices=KEEP_INDICES,
+    band_map=BAND_INDEX_TO_NAME,
+    fill_default=-999.0,
+    return_inside=False
+):
+    """
+    用闭合多边形裁剪 GOCI L1B 并输出 5 个波段到新 NC
+    - bbox 粗筛 -> 像元级点测 -> inside 最小包络收缩 -> 写出
+    返回 (out_nc_path, (r0,r1,c0,c1), (rr0,rr1,cc0,cc1))，若 return_inside=True 还返回 inside 掩膜
+    """
+    assert len(lon_ring) == len(lat_ring), "lon/lat 顶点数不一致"
+    if lon_ring[0] != lon_ring[-1] or lat_ring[0] != lat_ring[-1]:
+        lon_ring = np.r_[lon_ring, lon_ring[0]]
+        lat_ring = np.r_[lat_ring, lat_ring[0]]
 
-def compute_window_from_bbox(lat, lon, minx, miny, maxx, maxy):
-    """在 GOCI 经纬度网格上，用 bbox 得到最小行列窗口 (r0,r1,c0,c1)。"""
-    # 若经度为 0~360，统一到 -180~180
-    if lon.max() > 180:
-        lon = (lon + 180.0) % 360.0 - 180.0
-    inside = (lon >= minx) & (lon <= maxx) & (lat >= miny) & (lat <= maxy)
-    if not np.any(inside):
-        raise RuntimeError("footprint 的 bbox 与 GOCI 网格不相交。")
-    r_idx = np.where(np.any(inside, axis=1))[0]
-    c_idx = np.where(np.any(inside, axis=0))[0]
-    return int(r_idx.min()), int(r_idx.max()) + 1, int(c_idx.min()), int(c_idx.max()) + 1
+    poly = Path(np.c_[lon_ring, lat_ring])
 
-def mask_window_by_polygons(lon_win, lat_win, polys):
-    """对窗口内经纬度网格做多边形掩膜（任意多边形并集）。"""
-    pts = np.column_stack([lon_win.ravel(), lat_win.ravel()])
-    mask_all = np.zeros(pts.shape[0], dtype=bool)
-    for ring in polys:
-        mask_all |= Path(ring).contains_points(pts)
-    return mask_all.reshape(lon_win.shape)
-
-def main():
-    # —— 基本检查 ——
-    if not os.path.exists(GOCI_NC):     raise FileNotFoundError(GOCI_NC)
-    if not os.path.exists(LANDSAT_TIF): raise FileNotFoundError(LANDSAT_TIF)
-    for k in KEEP_INDICES:
-        if k not in BAND_INDEX_TO_NAME:
-            raise ValueError(f"非法波段索引：{k}")
-
-    # 1) 提取 Landsat footprint（WGS84）
-    polys = extract_footprint_polygons_wgs84(LANDSAT_TIF)
-    all_xy = np.vstack(polys)
-    minx, maxx = float(all_xy[:, 0].min()), float(all_xy[:, 0].max())
-    miny, maxy = float(all_xy[:, 1].min()), float(all_xy[:, 1].max())
-    print(f"[INFO] footprint 多边形数：{len(polys)}")
-    print(f"[INFO] footprint bbox: lon[{minx:.6f},{maxx:.6f}], lat[{miny:.6f},{maxy:.6f}]")
-
-    # 2) 读取 GOCI lat/lon
-    with Dataset(GOCI_NC, "r") as ds:
+    with Dataset(goci_nc_path, "r") as ds:
+        # 经纬度（弯曲网格）
         lat = ds["navigation_data"]["latitude"][:]
         lon = ds["navigation_data"]["longitude"][:]
         if lat.shape != lon.shape:
-            raise RuntimeError(f"lat/lon 形状不一致：{lat.shape} vs {lon.shape}")
+            raise RuntimeError("latitude 与 longitude 形状不一致。")
 
-        # 3) bbox 窗口 + 多边形掩膜
-        r0, r1, c0, c1 = compute_window_from_bbox(lat, lon, minx, miny, maxx, maxy)
-        lat_sub = lat[r0:r1, c0:c1].astype(np.float32, copy=False)
-        lon_sub = lon[r0:r1, c0:c1].astype(np.float32, copy=False)
-        mask_sub = mask_window_by_polygons(lon_sub, lat_sub, polys)
+        # ① bbox 粗窗口
+        minx, maxx = float(lon_ring.min()), float(lon_ring.max())
+        miny, maxy = float(lat_ring.min()), float(lat_ring.max())
+        bbox_mask = (lon >= minx) & (lon <= maxx) & (lat >= miny) & (lat <= maxy)
+        if not np.any(bbox_mask):
+            raise RuntimeError("多边形与 GOCI 网格不相交（bbox）。")
+        r_idx = np.where(np.any(bbox_mask, axis=1))[0]
+        c_idx = np.where(np.any(bbox_mask, axis=0))[0]
+        r0, r1 = int(r_idx.min()), int(r_idx.max()) + 1
+        c0, c1 = int(c_idx.min()), int(c_idx.max()) + 1
 
-        print(f"[INFO] 裁剪窗口：rows[{r0}:{r1}] cols[{c0}:{c1}] -> 形状={(r1-r0, c1-c0)}")
-        print(f"[INFO] 窗口内多边形覆盖率：{mask_sub.mean()*100:.2f}%")
+        # ② 像元级点测（边界算 inside）
+        lon_win = lon[r0:r1, c0:c1]
+        lat_win = lat[r0:r1, c0:c1]
+        inside_full = poly.contains_points(
+            np.c_[lon_win.ravel(), lat_win.ravel()],
+            radius=1e-9
+        ).reshape(lon_win.shape)
+        if not np.any(inside_full):
+            raise RuntimeError("相交区域为空（精确点测）。")
 
-        # 4) 裁剪波段并套掩膜
-        geo = ds["geophysical_data"]
-        band_vars, band_attrs, fillvals = {}, {}, {}
-        for idx in KEEP_INDICES:
-            vname = BAND_INDEX_TO_NAME[idx]
-            if vname not in geo.variables:
-                raise KeyError(f"GOCI 缺少变量 geophysical_data/{vname}")
-            var = geo[vname]
-            attrs = {a: getattr(var, a) for a in var.ncattrs()}
-            fv = attrs.get("_FillValue", None)
+        # ③ 收缩到 inside=True 的最小行列包络
+        rows_any = np.any(inside_full, axis=1)
+        cols_any = np.any(inside_full, axis=0)
+        rr = np.where(rows_any)[0]
+        cc = np.where(cols_any)[0]
+        rr0, rr1 = int(rr.min()), int(rr.max()) + 1
+        cc0, cc1 = int(cc.min()), int(cc.max()) + 1
 
-            win = var[r0:r1, c0:c1].astype(np.float32, copy=False)
-            if fv is not None:
-                win = np.where(win == fv, np.nan, win)
-            win = np.where(mask_sub, win, np.nan)  # 多边形外设为 NaN
+        # 最终窗口
+        lon_fin = lon_win[rr0:rr1, cc0:cc1]
+        lat_fin = lat_win[rr0:rr1, cc0:cc1]
+        inside = inside_full[rr0:rr1, cc0:cc1]
 
-            band_vars[vname] = win
-            band_attrs[vname] = attrs
-            fillvals[vname] = fv
+        # ④ 写出
+        if os.path.exists(out_nc_path):
+            os.remove(out_nc_path)
+        out = Dataset(out_nc_path, "w", format="NETCDF4")
 
-    # 5) 写出 NetCDF
-    os.makedirs(os.path.dirname(os.path.abspath(OUT_NC)), exist_ok=True)
-    with Dataset(OUT_NC, "w", format="NETCDF4") as dst:
-        ny, nx = lat_sub.shape
-        dst.createDimension("y", ny)
-        dst.createDimension("x", nx)
+        try:
+            H, W = inside.shape
+            out.createDimension("y", H)
+            out.createDimension("x", W)
 
-        dst.source = "Cropped from GOCI-2 L1B by Landsat footprint polygon"
-        dst.history = "created by goci_subset_by_landsat_footprint (no resampling)"
-        dst.note = "Windowed by footprint bbox; out-of-polygon pixels set to _FillValue."
-        dst.keep_band_indices = ",".join(map(str, KEEP_INDICES))
-        dst.keep_band_names = ",".join([BAND_INDEX_TO_NAME[i] for i in KEEP_INDICES])
-        dst.footprint_bbox_lon = f"{minx:.10f},{maxx:.10f}"
-        dst.footprint_bbox_lat = f"{miny:.10f},{maxy:.10f}"
+            # navigation_data
+            nav_grp = out.createGroup("navigation_data")
+            lat_var = nav_grp.createVariable("latitude", "f4", ("y", "x"), zlib=True, complevel=1)
+            lon_var = nav_grp.createVariable("longitude", "f4", ("y", "x"), zlib=True, complevel=1)
+            lat_var[:, :] = lat_fin.astype(np.float32)
+            lon_var[:, :] = lon_fin.astype(np.float32)
+            lat_var.units = "degrees_north"
+            lon_var.units = "degrees_east"
 
-        # 保存第一个多边形顶点（用于复核；如需全部可自行扩展）
-        fp0 = polys[0]
-        dst.footprint_vertices_note = "first polygon exterior ring (EPSG:4326)"
-        dst.footprint_vertices_lon = ",".join([f"{x:.10f}" for x in fp0[:, 0].tolist()])
-        dst.footprint_vertices_lat = ",".join([f"{y:.10f}" for y in fp0[:, 1].tolist()])
+            # mask
+            mask_grp = out.createGroup("mask")
+            mvar = mask_grp.createVariable("inside_mask", "u1", ("y", "x"), zlib=True, complevel=1)
+            mvar[:, :] = inside.astype(np.uint8)
+            mvar.long_name = "1 = inside polygon; 0 = outside"
 
-        v_lat = dst.createVariable("latitude", "f4", ("y", "x"), zlib=True, complevel=4)
-        v_lon = dst.createVariable("longitude", "f4", ("y", "x"), zlib=True, complevel=4)
-        v_lat.long_name, v_lat.units = "latitude", "degrees_north"
-        v_lon.long_name, v_lon.units = "longitude", "degrees_east"
-        v_lat[:] = lat_sub
-        v_lon[:] = lon_sub
+            # geophysical_data
+            in_geo  = ds["geophysical_data"]
+            out_geo = out.createGroup("geophysical_data")
 
-        # 掩膜变量
-        v_mask = dst.createVariable("in_polygon_mask", "i1", ("y", "x"), zlib=True, complevel=4)
-        v_mask.long_name = "mask of pixels inside Landsat footprint polygon (1=True, 0=False)"
-        v_mask[:] = mask_sub.astype(np.int8)
+            for bi in keep_indices:
+                vname = band_map[bi]
+                if vname not in in_geo.variables:
+                    raise KeyError(f"缺少变量 geophysical_data/{vname}")
+                src_var = in_geo[vname]
 
-        # 各波段输出（把 NaN 恢复为 _FillValue）
-        for vname, data_sub in band_vars.items():
-            fv = fillvals[vname] if fillvals[vname] is not None else -999.0
-            out = np.nan_to_num(data_sub, nan=fv).astype("f4", copy=False)
-            v = dst.createVariable(vname, "f4", ("y", "x"), zlib=True, complevel=4, fill_value=fv)
-            # 恢复原属性（不覆盖 _FillValue）
-            for k, val in band_attrs[vname].items():
-                if k == "_FillValue":
-                    continue
-                try:
-                    setattr(v, k, val)
-                except Exception:
-                    pass
-            if not hasattr(v, "units"):
-                v.units = "W m-2 sr-1 um-1"
-            v[:] = out
+                # 只读入粗窗口，再切到最终窗口
+                data_win = src_var[r0:r1, c0:c1]
+                # 注意：netCDF4 会自动按 scale_factor/add_offset 返回实值（MaskedArray）
+                if np.ma.isMaskedArray(data_win):
+                    data_win = data_win.filled(np.nan).astype(np.float32)
+                else:
+                    data_win = np.array(data_win, dtype=np.float32)
+                data_fin = data_win[rr0:rr1, cc0:cc1]
 
-    print(f"[OK] 已输出基于 footprint 多边形裁剪的 NC：{OUT_NC}")
+                # 多边形外写 FillValue
+                fill_value = getattr(src_var, "_FillValue", -999.0)
+                data_out = data_fin.copy()
+                data_out[~inside] = fill_value
 
-    # ——（可选）快速质检图——
-    if MAKE_QC_PLOT:
-        import matplotlib.pyplot as plt
-        plt.figure(figsize=(6, 6))
-        plt.title("QC: footprint vs. mask (window)")
-        plt.contour(mask_sub.astype(int), levels=[0.5], linewidths=2, colors="r", label="mask")
-        for ring in polys:
-            plt.plot(ring[:, 0], ring[:, 1], "-", lw=1, label="footprint (lon/lat)")
-        plt.xlabel("Longitude (°)")
-        plt.ylabel("Latitude (°)")
-        plt.grid(True)
-        plt.show()
+                out_var = out_geo.createVariable(
+                    vname, "f4", ("y", "x"),
+                    zlib=True, complevel=1,
+                    fill_value=float(fill_value)
+                )
+                out_var[:, :] = data_out
 
+                # 复制元数据，但**不**复制缩放属性
+                safe_copy_ncattrs_without_scaling(src_var, out_var)
+
+            # 可选：复制少量全局属性
+            for att in ds.ncattrs():
+                if att.lower() in ("title", "summary", "history", "product_name", "product_version"):
+                    out.setncattr(att, getattr(ds, att))
+        finally:
+            out.close()
+
+    print(f"[OK] 已输出裁剪后的 NC：{out_nc_path}")
+    print(f"     ① 初始bbox窗口：r={r0}:{r1}, c={c0}:{c1}")
+    print(f"     ② inside收缩后：r={rr0}:{rr1}, c={cc0}:{cc1}  (输出尺寸={inside.shape})")
+    if return_inside:
+        return out_nc_path, (r0, r1, c0, c1), (rr0, rr1, cc0, cc1), inside
+    return out_nc_path, (r0, r1, c0, c1), (rr0, rr1, cc0, cc1)
+
+def show_subset_with_polygon(nc_path: str, lon_ring: np.ndarray, lat_ring: np.ndarray, out_png: str = "./goci_subset_shape.png"):
+    """
+    可视化：叠加多边形边界 + inside 掩膜热度，按弯曲网格正确绘制
+    """
+    with Dataset(nc_path, "r") as ds:
+        lat = ds["navigation_data"]["latitude"][:]
+        lon = ds["navigation_data"]["longitude"][:]
+        inside = ds["mask"]["inside_mask"][:].astype(bool)
+
+    plt.figure(figsize=(7, 6), dpi=130)
+    plt.title("GOCI subset (curvilinear) with polygon overlay")
+
+    # NaN 透明
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(alpha=0.0)
+
+    show_arr = ma.masked_where(~inside, inside)
+    plt.pcolormesh(lon, lat, show_arr, shading="auto", alpha=0.5, cmap=cmap)
+
+    plt.plot(lon_ring, lat_ring, "r-", lw=1.5, label="Footprint polygon")
+    plt.xlabel("Longitude (°E)")
+    plt.ylabel("Latitude (°N)")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(out_png, bbox_inches="tight")
+    plt.show()
+    print(f"[INFO] 已保存叠加示意图 -> {out_png}")
+
+# -------------------- main --------------------
 if __name__ == "__main__":
-    main()
+    # ==== 在这里定义路径与是否显示范围 ====
+    GOCI_NC = r"SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+    LANDSAT_TIF = r"SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/LC09_L1TP_116035_20250504_20250504_02_T1_B1.TIF"
+    OUT_NC = r"./goci_subset_5bands_polygon.nc"
+    SHOW_PLOT = True
+    OUT_PNG = "./goci_subset_shape.png"
+
+    if not os.path.exists(GOCI_NC):
+        raise FileNotFoundError(f"GOCI 文件不存在：{GOCI_NC}")
+    if not os.path.exists(LANDSAT_TIF):
+        raise FileNotFoundError(f"Landsat TIF 不存在：{LANDSAT_TIF}")
+
+    # 1) 得到 footprint 多边形（WGS84）
+    lon_ring, lat_ring = extract_footprint_lonlat(LANDSAT_TIF, to_crs="EPSG:4326")
+
+    # 2) 像元级裁剪 + inside 收缩窗口（并删除缩放属性）
+    out_nc, bbox_win, tight_win = clip_goci_by_polygon(
+        GOCI_NC, OUT_NC, lon_ring, lat_ring,
+        keep_indices=KEEP_INDICES,
+        band_map=BAND_INDEX_TO_NAME,
+        fill_default=-999.0
+    )
+
+    # 3) 可视化（叠加多边形边界）
+    if SHOW_PLOT:
+        show_subset_with_polygon(out_nc, lon_ring, lat_ring, OUT_PNG)

@@ -35,7 +35,7 @@ def extract_footprint_lonlat(tif_path: str, to_crs: str = "EPSG:4326"):
 
 if __name__ == "__main__":
     # 输入：任意一个带有效掩膜（alpha 或 nodata）的 Landsat 波段/影像
-    TIF_PATH = "SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/LC09_L1TP_116035_20250504_20250504_02_T1_B1.TIF"
+    TIF_PATH = "SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/LC09_L1TP_116035_20250504_20250504_02_T1_TOA_RAD_B1-2-3-4-5.tif"
 
     lon, lat = extract_footprint_lonlat(TIF_PATH, to_crs="EPSG:4326")
     print(f"[INFO] footprint 点数：{len(lon)}")

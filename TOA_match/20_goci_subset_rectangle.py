@@ -250,7 +250,7 @@ if __name__ == "__main__":
     # ==== 在这里定义路径与是否显示范围 ====
     GOCI_NC = r"SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
     LANDSAT_TIF = r"SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/LC09_L1TP_116035_20250504_20250504_02_T1_B1.TIF"
-    OUT_NC = r"./goci_subset_5bands_polygon.nc"
+    OUT_NC = r"./goci_subset_5bands.nc"
     SHOW_PLOT = True
     OUT_PNG = "./goci_subset_shape.png"
 

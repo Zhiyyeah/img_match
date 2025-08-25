@@ -24,7 +24,7 @@ import rasterio
 from pyproj import Transformer
 
 # ======== 路径（按需修改） ========
-GOCI_NC = "./goci_subset_5bands_polygon.nc"
+GOCI_NC = "./goci_subset_5bands.nc"
 LANDSAT_TIF = "SR_Imagery/LC09_L1TP_116035_20250504_20250504_02_T1/LC09_L1TP_116035_20250504_20250504_02_T1_TOA_RAD_B1-2-3-4-5.tif"
 OUT_DIR_COMPARE = "figs_compare"
 OUT_DIR_HIST = "figs_hist"

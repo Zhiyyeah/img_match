@@ -201,9 +201,9 @@ print(type(landsat_data['data']))
 # ----------------------------
 
 # 1) 可调参数（先用一组保守值）
-ROI_METERS   = 750   # 搜索半径（米）
-SIGMA_METERS = 400    # 高斯核宽度（米），约 0.3~0.7×ROI
-NEIGHBOURS   = 32      # 最大邻居数
+ROI_METERS   = 500   # 搜索半径（米）
+SIGMA_METERS = 250    # 高斯核宽度（米），约 0.3~0.7×ROI
+NEIGHBOURS   = 8      # 最大邻居数
 FILL_VALUE   = np.nan  # 没有邻居时写入的值
 NPROCS       = 1       # 并行进程数
 

@@ -200,12 +200,12 @@ print(type(landsat_data['data']))
 #    支持 HxW 或 BxHxW；内部统一本为 (B,H,W)
 # ----------------------------
 
-# 1) 可调参数（先用一组保守值）
-ROI_METERS   = 500   # 搜索半径（米）
-SIGMA_METERS = 250    # 高斯核宽度（米），约 0.3~0.7×ROI
-NEIGHBOURS   = 8      # 最大邻居数
-FILL_VALUE   = np.nan  # 没有邻居时写入的值
-NPROCS       = 1       # 并行进程数
+# 1) 可调参数（更稳妥的起步值：以源像元为尺度，放宽到 ~3×）
+ROI_METERS   = 800   # 搜索半径（米）——对 GOCI~250–500m，先放宽，确保能找到邻居
+SIGMA_METERS = 320   # 高斯核宽度（米）≈ ROI 的 0.4
+NEIGHBOURS   = 16
+FILL_VALUE   = np.nan
+NPROCS       = 1
 
 # 2) 读取你已有的数据（当前已是 Hs, Ws, B）
 goci_arr = goci_data['data']          # 形状 (Hs, Ws, B) = (669, 901, 5)
@@ -230,7 +230,7 @@ b = 0
 src_band = goci_arr[:, :, b]          # 形状 (Hs, Ws)
 
 # 5) 将无效值转为掩膜（MaskedArray）；如果有固定填充值可在这里叠加
-src_band_masked = np.ma.array(src_band, mask=np.isnan(src_band))
+src_band_masked = np.ma.array(src_band, mask=~np.isfinite(src_band))
 print(f"准备完成：band={b}, src_band 形状={src_band.shape}, 掩膜比例={(src_band_masked.mask.mean()*100):.2f}%")
 
 
@@ -247,6 +247,7 @@ resampled_band = kd_tree.resample_gauss(
     sigmas=SIGMA_METERS,
     fill_value=FILL_VALUE,
     neighbours=NEIGHBOURS,
+    reduce_data=True,          # <<< 显式开启剪枝，避免无效邻居导致全 NaN
     with_uncert=False,
     nprocs=NPROCS
 )
@@ -268,3 +269,177 @@ else:
 
 print(f"有效像元比例: {ratio_finite:.2f}%  (NaN个数: {n_nan})")
 print(f"值域: min={vmin:.6g}, max={vmax:.6g}, mean={vmean:.6g}")
+
+# ---- 最近邻基线（几何/ROI 自检）----
+try:
+    resampled_nn = kd_tree.resample_nearest(
+        source_swath, src_band_masked, target_swath,
+        radius_of_influence=ROI_METERS,
+        fill_value=np.nan
+    )
+    print("nearest finite ratio =", float(np.isfinite(resampled_nn).mean()))
+except Exception as _e:
+    print("nearest baseline failed:", _e)
+
+# ## 6. 生成对比图：GOCI 原始 vs 重采样到 Landsat vs Landsat 原始
+# 说明：
+#  - 仅针对当前处理的波段 b。
+#  - 为避免显示过慢，对超大 Landsat 栅格做自适应抽稀 (quicklook)。
+#  - 统一颜色尺度（使用 2~98 百分位裁剪，减少极端值影响）。
+
+try:
+    wl_g_list = sorted(GOCI_BANDS.keys())
+    wl_g = wl_g_list[b]
+    # 找到最接近的 Landsat 波段索引
+    landsat_idx = int(np.argmin(np.abs(np.array(LANDSAT_WAVELENGTHS) - wl_g)))
+    wl_l = LANDSAT_WAVELENGTHS[landsat_idx]
+
+    goci_native = goci_arr[:, :, b]
+    goci_resampled = resampled_band  # 已与 Landsat 尺寸一致
+    landsat_native = landsat_data['data'][landsat_idx, :, :]
+
+    # 用户指定的空间范围 (lon_min, lon_max, lat_min, lat_max)
+    lon_min, lon_max = 126.3, 126.5
+    lat_min, lat_max = 35.35, 35.5
+
+    # 裁剪函数：基于 lon/lat 2D 数组计算 bounding box 并裁剪数组
+    def crop_to_bounds(arr, lon, lat, lon_min, lon_max, lat_min, lat_max):
+        # lon/lat are 2D arrays with same shape as arr (or target grid)
+        mask = (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max)
+        if not np.any(mask):
+            return None, None, None
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        rmin, rmax = int(np.argmax(rows)), int(len(rows) - np.argmax(rows[::-1]) - 1)
+        cmin, cmax = int(np.argmax(cols)), int(len(cols) - np.argmax(cols[::-1]) - 1)
+        # slice and return
+        arr_sub = arr[rmin:rmax+1, cmin:cmax+1]
+        lon_sub = lon[rmin:rmax+1, cmin:cmax+1]
+        lat_sub = lat[rmin:rmax+1, cmin:cmax+1]
+        return arr_sub, lon_sub, lat_sub
+
+    # 对 GOCI 原始（curvilinear grid）进行裁剪
+    g_crop, g_lon_crop, g_lat_crop = crop_to_bounds(goci_native, g_lon, g_lat, lon_min, lon_max, lat_min, lat_max)
+    if g_crop is not None:
+        goci_native_plot = g_crop
+        g_lon_plot = g_lon_crop
+        g_lat_plot = g_lat_crop
+    else:
+        print('⚠️ No GOCI pixels inside requested bounds, using full GOCI extent for plotting')
+        goci_native_plot = goci_native
+        g_lon_plot = g_lon
+        g_lat_plot = g_lat
+
+    # 对重采样结果与 Landsat 使用 Landsat 的 lon/lat 做裁剪（它们共享网格）
+    r_crop, r_lon_crop, r_lat_crop = crop_to_bounds(goci_resampled, L_lon, L_lat, lon_min, lon_max, lat_min, lat_max)
+    if r_crop is not None:
+        goci_resampled_plot = r_crop
+        res_lon_plot = r_lon_crop
+        res_lat_plot = r_lat_crop
+    else:
+        print('⚠️ No resampled pixels inside requested bounds, using full resampled extent for plotting')
+        goci_resampled_plot = goci_resampled
+        res_lon_plot = L_lon
+        res_lat_plot = L_lat
+
+    l_crop, l_lon_crop, l_lat_crop = crop_to_bounds(landsat_native, L_lon, L_lat, lon_min, lon_max, lat_min, lat_max)
+    if l_crop is not None:
+        landsat_native_plot = l_crop
+        landsat_lon_plot = l_lon_crop
+        landsat_lat_plot = l_lat_crop
+    else:
+        print('⚠️ No Landsat pixels inside requested bounds, using full Landsat extent for plotting')
+        landsat_native_plot = landsat_native
+        landsat_lon_plot = L_lon
+        landsat_lat_plot = L_lat
+
+    # 计算颜色范围（排除 NaN）
+    def robust_min_max(*arrays, pmin=2, pmax=98):
+        vals = np.concatenate([a[np.isfinite(a)] for a in arrays if np.isfinite(a).any()])
+        if vals.size == 0:
+            return 0, 1
+        v1, v2 = np.percentile(vals, [pmin, pmax])
+        if not np.isfinite(v1) or not np.isfinite(v2) or v1 == v2:
+            v1, v2 = float(np.nanmin(vals)), float(np.nanmax(vals))
+            if v1 == v2:
+                v2 = v1 + 1e-6
+        return v1, v2
+
+    v1, v2 = robust_min_max(goci_native_plot, goci_resampled_plot, landsat_native_plot)
+
+    # 自适应抽稀函数（同时返回截取后的经纬度范围 extent）
+    def quicklook(arr, lon=None, lat=None, max_pixels=2_000_000):
+        h, w = arr.shape
+        total = h * w
+        if total <= max_pixels:
+            stride = 1
+            arr_sub = arr
+            lon_sub = lon
+            lat_sub = lat
+        else:
+            stride = int(math.ceil(math.sqrt(total / max_pixels)))
+            arr_sub = arr[::stride, ::stride]
+            lon_sub = lon[::stride, ::stride] if lon is not None else None
+            lat_sub = lat[::stride, ::stride] if lat is not None else None
+
+        # 计算 extent = [minlon, maxlon, minlat, maxlat]
+        if lon_sub is not None and lat_sub is not None:
+            lon_vals = lon_sub[np.isfinite(lon_sub)]
+            lat_vals = lat_sub[np.isfinite(lat_sub)]
+            if lon_vals.size and lat_vals.size:
+                extent = [float(np.nanmin(lon_vals)), float(np.nanmax(lon_vals)),
+                          float(np.nanmin(lat_vals)), float(np.nanmax(lat_vals))]
+            else:
+                extent = None
+        else:
+            extent = None
+
+        return arr_sub, stride, extent
+
+    g_native_show, s_g, ext_g = quicklook(goci_native_plot, lon=g_lon_plot, lat=g_lat_plot)
+    g_resamp_show, s_r, ext_r = quicklook(goci_resampled_plot, lon=res_lon_plot, lat=res_lat_plot)
+    l_native_show, s_l, ext_l = quicklook(landsat_native_plot, lon=landsat_lon_plot, lat=landsat_lat_plot)
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    im0 = axes[0].imshow(g_native_show, vmin=v1, vmax=v2, cmap='viridis', extent=ext_g, origin='upper')
+    axes[0].set_title(f'GOCI original {wl_g} nm\n{goci_native.shape[1]}x{goci_native.shape[0]} (stride {s_g})')
+    axes[0].set_xlabel('Longitude')
+    axes[0].set_ylabel('Latitude')
+    axes[0].grid(False)
+
+    im1 = axes[1].imshow(g_resamp_show, vmin=v1, vmax=v2, cmap='viridis', extent=ext_r, origin='upper')
+    axes[1].set_title(f'GOCI->Landsat resampled {wl_g} nm\n{goci_resampled.shape[1]}x{goci_resampled.shape[0]} (stride {s_r})')
+    axes[1].set_xlabel('Longitude')
+    axes[1].set_ylabel('Latitude')
+    axes[1].grid(False)
+
+    im2 = axes[2].imshow(l_native_show, vmin=v1, vmax=v2, cmap='viridis', extent=ext_l, origin='upper')
+    axes[2].set_title(f'Landsat original ~{wl_l} nm\n{landsat_native.shape[1]}x{landsat_native.shape[0]} (stride {s_l})')
+    axes[2].set_xlabel('Longitude')
+    axes[2].set_ylabel('Latitude')
+    axes[2].grid(False)
+
+    cbar = fig.colorbar(im2, ax=axes.ravel().tolist(), shrink=0.75, pad=0.02)
+    cbar.set_label('Radiance (TOA)')
+    fig.suptitle(f'Band {wl_g} nm comparison (GOCI original / resampled / Landsat)')
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+
+    # 保存
+    out_dir = 'figs_compare'
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f'compare_pyresample_band_{wl_g}nm.png')
+    fig.savefig(out_path, dpi=600)
+    print(f'✅ Comparison figure saved: {out_path}')
+    plt.close(fig)
+except Exception as e:
+    print('❌ Failed to generate comparison figure:', e)
+
+print("全图 finite ratio =", np.isfinite(resampled_band).mean())  # 全景有效比例
+print("AOI finite ratio =", np.isfinite(r_crop).mean() if r_crop is not None else "AOI无交集")
+
+plt.figure(figsize=(5,4))
+plt.imshow(np.isfinite(resampled_band), origin='upper')
+plt.title('Finite mask of resampled (True=valid)')
+plt.gca().grid(False)
+plt.tight_layout(); plt.show()
+

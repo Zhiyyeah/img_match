@@ -191,7 +191,7 @@ def list_variables_by_group(file_path):
 
 if __name__ == "__main__":
 
-    file_path = "SR_Imagery/GK2B_GOCI2_L2_20250504_021530_LA_S007_AC.nc"
+    file_path = "/Users/zy/Downloads/GK2_GOCI2_L1B_20210330_021530_LA_S007.nc"
 
     
     print("🌊 GOCI2 L1B NetCDF文件分析工具")

@@ -419,16 +419,21 @@ try:
     axes[2].set_ylabel('Latitude')
     axes[2].grid(False)
 
-    cbar = fig.colorbar(im2, ax=axes.ravel().tolist(), shrink=0.75, pad=0.02)
-    cbar.set_label('Radiance (TOA)')
-    fig.suptitle(f'Band {wl_g} nm comparison (GOCI original / resampled / Landsat)')
-    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    # put a single colorbar on the right so it won't overlap subplots
+    cax = fig.add_axes([0.92, 0.15, 0.02, 0.7])  # left, bottom, width, height
+    cbar = fig.colorbar(im2, cax=cax)
+    cbar.set_label('Radiance (TOA)', rotation=270, labelpad=15)
+    cbar.ax.tick_params(labelsize=8)
 
-    # 保存
+    fig.suptitle(f'Band {wl_g} nm comparison (GOCI original / resampled / Landsat)')
+    # adjust margins so lon tick labels are fully visible and title has space
+    fig.subplots_adjust(left=0.06, right=0.9, top=0.92, bottom=0.12, wspace=0.18)
+
+    # 保存（使用 bbox_inches='tight' 保证标签不被裁切）
     out_dir = 'figs_compare'
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f'compare_pyresample_band_{wl_g}nm.png')
-    fig.savefig(out_path, dpi=600)
+    fig.savefig(out_path, dpi=600, bbox_inches='tight')
     print(f'✅ Comparison figure saved: {out_path}')
     plt.close(fig)
 except Exception as e:

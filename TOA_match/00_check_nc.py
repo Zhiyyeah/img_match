@@ -191,7 +191,7 @@ def list_variables_by_group(file_path):
 
 if __name__ == "__main__":
 
-    file_path = "/Users/zy/Downloads/GK2_GOCI2_L1B_20210330_021530_LA_S007.nc"
+    file_path = "/Users/zy/Python_code/My_Git/img_match/batch_outputs/LC09_L1TP_117036_20220417_20230421_02_T1/GK2_GOCI2_L1B_20220417_021530_LA_S007_subset_footprint.nc"
 
     
     print("🌊 GOCI2 L1B NetCDF文件分析工具")

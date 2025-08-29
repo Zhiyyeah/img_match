@@ -6,15 +6,16 @@
 从文件（NetCDF/MTL/TIFF tags）读取时间（若不可用回退到文件名解析），
 按时间容差或同日匹配，并输出包含两端时间与时间差的 pairs.csv。
 """
-
+import os
 from pathlib import Path
 import re, csv, datetime as dt
 import rasterio
 import numpy as np
 from netCDF4 import Dataset, num2date
+print(os.getcwd())
 
 # 配置：固定根目录与时间容差（分钟）
-ROOT = Path("/Users/zy/Python_code/My_Git/img_match/SR_Imagery/Slot_7_2021_2025")
+ROOT = Path("SR_Imagery\Slot_7_2021_2025")
 TIME_TOL_MIN = 40
 
 # 正则用于从文件名回退解析日期

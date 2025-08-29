@@ -693,7 +693,7 @@ def main():
     """
     # ---------------- 在这里设置所有参数 ----------------
     # 自定义 CSV 路径（请按需修改为你的实际路径）
-    PAIRS_CSV_PATH = r"/Users/zy/Python_code/My_Git/img_match/SR_Imagery/Slot_7_2021_2025/pairs.csv"
+    PAIRS_CSV_PATH = r"SR_Imagery\Slot_7_2021_2025\pairs.csv"
     pairs_csv = Path(PAIRS_CSV_PATH)
 
     # Landsat 定标波段（仅 RAD 模式）
@@ -703,7 +703,7 @@ def main():
     goci_keep_vars = GOCI_BAND_NAMES_DEFAULT[:]
 
     # 批处理结果摘要 CSV（所有输出统一汇总到该目录下，每个场景单独一个子文件夹）
-    OUTPUT_ROOT = Path("/Users/zy/python_code/My_Git/img_match/batch_outputs")
+    OUTPUT_ROOT = Path("./batch_outputs")
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     out_summary = (OUTPUT_ROOT / "batch_results.csv")
     # ----------------------------------------------------

@@ -1,6 +1,7 @@
 # Python
 SR_Imagery/
 batch_outputs/
+batch_resampled/
 Image_match_Imagery/
 __pycache__/
 *.py[cod]

@@ -41,6 +41,10 @@ NEIGHBOURS   = 16
 FILL_VALUE   = np.nan
 NPROCS       = 1
 
+# 为避免一次性在 kd_tree 内部构造超大 (H*W, 2) float64 数组导致内存吃紧，
+# 将目标窗口按行分块处理；根据机器内存可调整大小（例如 512/1024/2048）。
+TILE_ROWS    = 1024
+
 # 波段映射（与裁剪输出 geophysical_data 保持一致）
 GOCI_BANDS = {
     443: "L_TOA_443",
@@ -183,29 +187,43 @@ def resample_one_pair(ls_tif: Path, goci_nc: Path, out_dir: Path) -> Path:
         tgt_swath = geometry.SwathDefinition(lons=L_lon, lats=L_lat)
         print("  [WARN] 未找到重叠窗口，使用全幅目标网格，计算会很慢")
 
-    # 重采样（仅对窗口内计算，再写回全幅结果）
+    # 重采样（仅对窗口内计算，再写回全幅结果），对窗口进行按行分块，降低峰值内存
     resampled = np.full((B, Ht, Wt), np.nan, dtype=np.float32)
+    win_h, win_w = L_lat_win.shape
+    # 分块的起止行（相对于窗口坐标）
+    tile_edges = list(range(0, win_h, max(1, int(TILE_ROWS)))) + [win_h]
     for b in range(B):
         t_band0 = time.time()
         src_b = np.ma.array(g_data[b], mask=~np.isfinite(g_data[b]))
-        if USE_GAUSSIAN:
-            out_b = kd_tree.resample_gauss(
-                src_swath, src_b, tgt_swath,
-                radius_of_influence=ROI_METERS,
-                sigmas=SIGMA_METERS,
-                fill_value=FILL_VALUE,
-                neighbours=NEIGHBOURS,
-                reduce_data=True,
-                nprocs=NPROCS,
+        acc_time = 0.0
+        for i in range(len(tile_edges) - 1):
+            rr0, rr1 = tile_edges[i], tile_edges[i+1]
+            # 构造当前 tile 的目标 swath（显著减小 kd_tree 的内部 (N,2) 数组规模）
+            tgt_swath_tile = geometry.SwathDefinition(
+                lons=L_lon_win[rr0:rr1, :],
+                lats=L_lat_win[rr0:rr1, :],
             )
-        else:
-            out_b = kd_tree.resample_nearest(
-                src_swath, src_b, tgt_swath,
-                radius_of_influence=ROI_METERS,
-                fill_value=FILL_VALUE,
-            )
-        resampled[b, rmin:rmax+1, cmin:cmax+1] = out_b.astype(np.float32)
-        print(f"    [BAND {b+1}/{B}] 窗口重采样完成，用时 {time.time()-t_band0:.2f}s")
+            t0 = time.time()
+            if USE_GAUSSIAN:
+                out_tile = kd_tree.resample_gauss(
+                    src_swath, src_b, tgt_swath_tile,
+                    radius_of_influence=ROI_METERS,
+                    sigmas=SIGMA_METERS,
+                    fill_value=FILL_VALUE,
+                    neighbours=NEIGHBOURS,
+                    reduce_data=True,
+                    nprocs=NPROCS,
+                )
+            else:
+                out_tile = kd_tree.resample_nearest(
+                    src_swath, src_b, tgt_swath_tile,
+                    radius_of_influence=ROI_METERS,
+                    fill_value=FILL_VALUE,
+                )
+            acc_time += time.time() - t0
+            # 写回全幅的相对位置
+            resampled[b, rmin+rr0:rmin+rr1, cmin:cmax+1] = out_tile.astype(np.float32)
+        print(f"    [BAND {b+1}/{B}] 窗口分块重采样完成，tiles={len(tile_edges)-1} 用时 {acc_time:.2f}s")
 
     # 写多波段 GeoTIFF（沿用 Landsat 几何）
     tag = 'GAUSS' if USE_GAUSSIAN else 'NEAREST'

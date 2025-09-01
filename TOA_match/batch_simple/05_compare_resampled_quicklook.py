@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 
 OUTPUT_ROOT = Path("batch_outputs")
 RESAMPLED_ROOT = Path("batch_resampled")
+MASKED_ROOT = Path("batch_masked")
 
 # 目标缩略图的最大高（像素），宽度按比例缩放
 THUMB_MAX_H = 1200
@@ -50,12 +51,20 @@ def discover_pairs():
                 goci_on_ls = f
                 break
         # landsat tif
-        ls_dir = OUTPUT_ROOT / scene_dir.name
         landsat_tif = None
-        if ls_dir.exists():
-            for f in ls_dir.iterdir():
-                if f.suffix.lower() == ".tif" and "_TOA_RAD_B" in f.name:
-                    landsat_tif = f
+        # 优先使用 masked HR（仅水体）
+        masked_scene = MASKED_ROOT / scene_dir.name
+        if masked_scene.exists():
+            cands = [f for f in masked_scene.iterdir() if f.suffix.lower()=='.tif' and '_TOA_RAD_B' in f.name and f.name.endswith('_only_water.tif')]
+            if cands:
+                landsat_tif = sorted(cands, key=lambda p: p.name)[0]
+        # 回退到 outputs 的 HR TIF
+        if landsat_tif is None:
+            ls_dir = OUTPUT_ROOT / scene_dir.name
+            if ls_dir.exists():
+                for f in ls_dir.iterdir():
+                    if f.suffix.lower() == ".tif" and "_TOA_RAD_B" in f.name:
+                        landsat_tif = f
         if goci_on_ls and landsat_tif:
             pairs.append((scene_dir.name, landsat_tif, goci_on_ls))
     return pairs
@@ -163,4 +172,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

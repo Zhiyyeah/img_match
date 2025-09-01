@@ -28,6 +28,7 @@ from rasterio.windows import Window
 # 目录配置
 OUTPUT_ROOT = Path("batch_outputs")
 RESAMPLED_ROOT = Path("batch_resampled")
+MASKED_ROOT = Path("batch_masked")  # 03.5 输出目录（可选）
 TIF_ROOT = Path("SR_Imagery") / "tif"
 NPY_ROOT = Path("SR_Imagery") / "npy"
 # 向后兼容的别名（旧日志里引用 PATCH_ROOT）
@@ -39,12 +40,25 @@ STRIDE = 256
 
 
 def find_scene_inputs(scene_dir: Path) -> Tuple[Optional[Path], Optional[Path]]:
-    """返回 (landsat_tif, goci_on_ls_tif)"""
+    """返回 (landsat_tif, goci_on_ls_tif)
+
+    - HR(Landsat): 优先使用 03.5 产生的仅水体版本（batch_masked/{scene}/*_only_water.tif），
+      否则回退到 batch_outputs/{scene} 中的辐射定标 TIF。
+    - LR(GOCI_on_Landsat): 来自 batch_resampled/{scene}/
+    """
     landsat_tif: Optional[Path] = None
     goci_on_ls: Optional[Path] = None
 
-    # batch_outputs
-    if scene_dir.exists():
+    # 先看 batch_masked/{scene} 的仅水体 HR（若存在）
+    masked_scene = MASKED_ROOT / scene_dir.name
+    if masked_scene.exists():
+        # 优先带有 _only_water 的 HR TIF
+        cands = [f for f in masked_scene.iterdir() if f.suffix.lower()==".tif" and "_toa_rad_b" in f.name.lower() and f.name.endswith("_only_water.tif")]
+        if cands:
+            landsat_tif = sorted(cands, key=lambda p: p.name)[0]
+
+    # 回退到 batch_outputs/{scene}
+    if landsat_tif is None and scene_dir.exists():
         for f in scene_dir.iterdir():
             name = f.name.lower()
             if f.suffix.lower() == ".tif" and "_toa_rad_b" in name:

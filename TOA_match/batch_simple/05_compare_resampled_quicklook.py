@@ -57,7 +57,17 @@ def discover_pairs():
         if masked_scene.exists():
             cands = [f for f in masked_scene.iterdir() if f.suffix.lower()=='.tif' and '_TOA_RAD_B' in f.name and f.name.endswith('_only_water.tif')]
             if cands:
-                landsat_tif = sorted(cands, key=lambda p: p.name)[0]
+                cand = sorted(cands, key=lambda p: p.name)[0]
+                # 只在候选有有效像元时才采用（避免全 NaN 导致空图）
+                try:
+                    with rasterio.open(cand) as _ds:
+                        arr = _ds.read(1, out_shape=(1, min(_ds.height, 256), int(round(_ds.width * min(_ds.height, 256) / max(1, _ds.height)))), resampling=Resampling.bilinear).astype(np.float32)
+                        if _ds.nodata is not None:
+                            arr = np.where(arr == _ds.nodata, np.nan, arr)
+                        if np.isfinite(arr).any():
+                            landsat_tif = cand
+                except Exception:
+                    pass
         # 回退到 outputs 的 HR TIF
         if landsat_tif is None:
             ls_dir = OUTPUT_ROOT / scene_dir.name

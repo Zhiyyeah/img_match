@@ -13,23 +13,19 @@ pip install geopandas shapely rasterio netCDF4 matplotlib
 
 from __future__ import annotations
 from pathlib import Path
-import warnings
 import numpy as np
 import rasterio
-from rasterio.features import rasterize
-from shapely.geometry import box
 import geopandas as gpd
 from netCDF4 import Dataset
 import shutil
 import matplotlib.pyplot as plt
 from rasterio.enums import Resampling
+from pyproj import Transformer
 
 # ----------------- 配置（按需修改） -----------------
 OUTPUT_ROOT   = Path("batch_outputs")    # 你的 02 脚本输出根目录
 MASKED_ROOT   = Path("batch_masked")     # 去陆地后的输出根目录
 NE_LAND_SHP   = Path("TOA_match/batch_simple/ne_10m_land/ne_10m_land.shp")  # 或解压到此处
-ALL_TOUCHED   = False  # rasterize 时是否认为任何接触到像元边界的多边形都算覆盖
-BUFFER_M      = 150    # 岸线缓冲（米），>0 可以“向海扩一点”，减少潮滩/岸线误差；0 表示不用
 WRITE_MASK_GT = True   # 是否另存一张 Landsat 网格的二值陆地掩膜 GeoTIFF
 # ---------------------------------------------------
 
@@ -54,226 +50,79 @@ def discover_pairs(root: Path):
     return pairs
 
 
-def landmask_for_landsat_grid(ls_tif: Path, land_shp: Path, all_touched=False, buffer_m=0) -> np.ndarray:
-    """把 ne_10m_land.shp 栅格化到 Landsat 规则网格，返回布尔掩膜（True=陆地）。
+    
 
-    更稳健的处理：
-    - 先投影到影像 CRS
-    - 修复无效几何（make_valid 或 buffer(0)）
-    - 先裁剪到影像 bbox，降低复杂度
-    - 再进行米级缓冲（如启用）
+
+def landmask_for_landsat_grid_points(ls_tif: Path, land_shp: Path, tile_rows: int = 1024) -> np.ndarray:
+    """基于点测（像元中心在经纬度上的点是否落在陆地多边形内）生成 Landsat 掩膜。
+
+    更换思路：
+    - 不再做矢量栅格化，直接在像元中心进行点在面内测试（shapely contains）；
+    - 先将矢量统一到 EPSG:4326，再把 Landsat 网格分块转换到经纬度；
+    - True 表示陆地。
     """
-    def _make_valid(geom):
-        try:
-            from shapely.validation import make_valid
-            return make_valid(geom)
-        except Exception:
-            try:
-                return geom.buffer(0)
-            except Exception:
-                return geom
-
-    def _safe_buffer(geom, dist):
-        try:
-            return geom.buffer(dist)
-        except Exception:
-            try:
-                return _make_valid(geom).buffer(dist)
-            except Exception:
-                return geom
-
-    gdf = gpd.read_file(land_shp)
-    with rasterio.open(ls_tif) as src:
-        # 将矢量投影到影像 CRS
-        gdf = gdf.to_crs(src.crs)
-        # 修复无效几何并剔除空
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
-            gdf["geometry"] = gdf.geometry.apply(lambda g: _make_valid(g) if g is not None and not g.is_empty and not g.is_valid else g)
-            gdf = gdf[(~gdf.geometry.is_empty) & gdf.geometry.notna()]
-        # 先裁剪到影像外接矩形，避免处理与影像相距很远的陆地
-        bbox_poly = box(*src.bounds)
-        # 先用 bounds 做快速过滤再做精确相交，减少无意义运算与告警
-        bxmin, bymin, bxmax, bymax = src.bounds
-        b = gdf.bounds
-        sel = (b["maxx"] >= bxmin) & (b["minx"] <= bxmax) & (b["maxy"] >= bymin) & (b["miny"] <= bymax)
-        gdf = gdf[sel]
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', category=RuntimeWarning, module='shapely.*')
-            try:
-                gdf["geometry"] = gdf.geometry.intersection(bbox_poly)
-            except Exception:
-                # 保底：如果 intersection 异常，跳过裁剪
-                pass
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
-            gdf = gdf[(~gdf.geometry.is_empty) & gdf.geometry.notna()]
-        # 可选：岸线缓冲（米）
-        if buffer_m and buffer_m != 0:
-            gdf["geometry"] = gdf.geometry.apply(lambda g: _safe_buffer(g, buffer_m))
-            gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()]
-        shapes = [(geom, 1) for geom in gdf.geometry if geom is not None and not geom.is_empty]
-        mask = rasterize(
-            shapes=shapes,
-            out_shape=(src.height, src.width),
-            transform=src.transform,
-            fill=0,
-            all_touched=all_touched,
-            dtype="uint8"
-        )
-    return mask.astype(bool)  # True=land
-
-
-def landmask_for_landsat_grid_v2(ls_tif: Path, land_shp: Path, all_touched: bool = False, buffer_m: float = 0.0) -> np.ndarray:
-    """更稳健的陆地掩膜构建（True=陆地）。
-
-    改进：
-    - 若影像 CRS 为经纬度，自动将米级缓冲转换为角度缓冲；
-    - 栅格化后做占比检查，极端时去掉缓冲重算；仍异常则返回全 False，避免整幅被掩掉。
-    """
-    def _make_valid(geom):
-        try:
-            from shapely.validation import make_valid
-            return make_valid(geom)
-        except Exception:
-            try:
-                return geom.buffer(0)
-            except Exception:
-                return geom
-
-    def _safe_buffer(geom, dist):
-        try:
-            return geom.buffer(dist)
-        except Exception:
-            try:
-                return _make_valid(geom).buffer(dist)
-            except Exception:
-                return geom
-
     if not Path(land_shp).exists():
         raise FileNotFoundError(f"未找到陆地矢量: {land_shp}")
+
     gdf = gpd.read_file(land_shp)
+    # 统一到 EPSG:4326
+    if gdf.crs is None or str(gdf.crs).strip() == "":
+        gdf = gdf.set_crs("EPSG:4326")
+    else:
+        gdf = gdf.to_crs("EPSG:4326")
+
+    # 修复无效几何、仅保留面
+    from shapely.validation import make_valid as _mk
+    def _fix(g):
+        if g is None or g.is_empty:
+            return None
+        if not g.is_valid:
+            try:
+                g = _mk(g)
+            except Exception:
+                try:
+                    g = g.buffer(0)
+                except Exception:
+                    return None
+        return g
+    gdf["geometry"] = gdf.geometry.apply(_fix)
+    gdf = gdf[gdf.geometry.notna() & (~gdf.geometry.is_empty)]
+    # 合并为一个多边形（含洞）
+    try:
+        land_geom = gdf.union_all()
+    except Exception:
+        land_geom = gdf.unary_union
+    if land_geom.is_empty:
+        raise RuntimeError("陆地矢量 union 为空")
+
+    mask: np.ndarray
     with rasterio.open(ls_tif) as src:
-        # 投影到影像 CRS
-        gdf = gdf.to_crs(src.crs)
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
-            gdf["geometry"] = gdf.geometry.apply(lambda g: _make_valid(g) if g is not None and not g.is_empty and not g.is_valid else g)
-            gdf = gdf[(~gdf.geometry.is_empty) & gdf.geometry.notna()]
-
-        # 裁剪到影像 bbox
-        from shapely.geometry import box as _box
-        bxmin, bymin, bxmax, bymax = src.bounds
-        bbox_poly = _box(bxmin, bymin, bxmax, bymax)
-        b = gdf.bounds
-        sel = (b["maxx"] >= bxmin) & (b["minx"] <= bxmax) & (b["maxy"] >= bymin) & (b["miny"] <= bymax)
-        gdf = gdf[sel]
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', category=RuntimeWarning, module='shapely.*')
+        H, W = src.height, src.width
+        T = src.transform
+        crs = src.crs
+        transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        mask = np.zeros((H, W), dtype=bool)
+        # 逐块转换行到经纬度并测试
+        col_idx = np.arange(W, dtype=np.float64)
+        for r0 in range(0, H, tile_rows):
+            r1 = min(H, r0 + tile_rows)
+            rows = np.arange(r0, r1, dtype=np.float64)
+            cgrid, rgrid = np.meshgrid(col_idx, rows)
+            # 像元中心
+            x = T.c + T.a * (cgrid + 0.5) + T.b * (rgrid + 0.5)
+            y = T.f + T.d * (cgrid + 0.5) + T.e * (rgrid + 0.5)
+            lon, lat = transformer.transform(x, y)
+            # contains 测试（Shapely 2: contains_xy；老版本回退 vectorized.contains）
             try:
-                gdf["geometry"] = gdf.geometry.intersection(bbox_poly)
+                from shapely import contains_xy
+                inside = contains_xy(land_geom, lon, lat)
             except Exception:
-                pass
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
-            gdf = gdf[(~gdf.geometry.is_empty) & gdf.geometry.notna()]
-
-        # 计算缓冲（自动选择米或度）
-        eff_buffer = 0.0
-        if buffer_m and buffer_m != 0:
-            try:
-                is_geographic = getattr(src.crs, "is_geographic", False)
-            except Exception:
-                is_geographic = False
-            eff_buffer = float(buffer_m)
-            if is_geographic:
-                # 转角度（取图心近似）
-                Hc, Wc = src.height // 2, src.width // 2
-                x_c = src.transform.c + src.transform.a * (Wc + 0.5)
-                y_c = src.transform.f + src.transform.e * (Hc + 0.5)
-                try:
-                    from pyproj import Transformer
-                    tf = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
-                    lon_c, lat_c = tf.transform(x_c, y_c)
-                except Exception:
-                    lon_c, lat_c = 0.0, 30.0
-                import numpy as _np
-                deg_lat = eff_buffer / 111000.0
-                coslat = max(0.1, _np.cos(_np.deg2rad(lat_c)))
-                deg_lon = eff_buffer / (111000.0 * coslat)
-                eff_buffer = max(deg_lat, deg_lon)
-            # 记录缓冲信息
-            try:
-                print(f"  [INFO] landmask: buffer={eff_buffer:.6f} ({'deg' if is_geographic else 'm'}), all_touched={all_touched}")
-            except Exception:
-                pass
-            gdf["geometry"] = gdf.geometry.apply(lambda g: _safe_buffer(g, eff_buffer))
-            gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()]
-
-        shapes = [(geom, 1) for geom in gdf.geometry if geom is not None and not geom.is_empty]
-
-        def _rasterize(shps):
-            return rasterize(
-                shapes=shps,
-                out_shape=(src.height, src.width),
-                transform=src.transform,
-                fill=0,
-                all_touched=all_touched,
-                dtype="uint8",
-            )
-
-        if not shapes:
-            try:
-                print("  [WARN] landmask: shapes 为空，返回全 False 掩膜（无陆地）")
-            except Exception:
-                pass
-            return np.zeros((src.height, src.width), dtype=bool)
-
-        mask = _rasterize(shapes)
-        ratio = float(mask.mean()) if mask.size else 0.0
-        try:
-            print(f"  [INFO] landmask: 初始陆地占比={ratio*100:.2f}%  (H={src.height}, W={src.width})")
-        except Exception:
-            pass
-        if ratio > 0.95 and (buffer_m and buffer_m != 0):
-            # 去掉缓冲重算一次
-            gdf2 = gpd.read_file(land_shp).to_crs(src.crs)
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
-                gdf2["geometry"] = gdf2.geometry.apply(lambda g: _make_valid(g) if g is not None and not g.is_empty and not g.is_valid else g)
-                gdf2 = gdf2[(~gdf2.geometry.is_empty) & gdf2.geometry.notna()]
-            b2 = gdf2.bounds
-            sel2 = (b2["maxx"] >= bxmin) & (b2["minx"] <= bxmax) & (b2["maxy"] >= bymin) & (b2["miny"] <= bymax)
-            gdf2 = gdf2[sel2]
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=RuntimeWarning, module='shapely.*')
-                try:
-                    gdf2["geometry"] = gdf2.geometry.intersection(bbox_poly)
-                except Exception:
-                    pass
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
-                gdf2 = gdf2[(~gdf2.geometry.is_empty) & gdf2.geometry.notna()]
-            shapes2 = [(geom, 1) for geom in gdf2.geometry if geom is not None and not geom.is_empty]
-            if shapes2:
-                mask2 = _rasterize(shapes2)
-                ratio2 = float(mask2.mean()) if mask2.size else 0.0
-                try:
-                    print(f"  [INFO] landmask: 去缓冲重算占比={ratio2*100:.2f}%")
-                except Exception:
-                    pass
-                if ratio2 <= 0.95:
-                    return mask2.astype(bool)
-
-        # 兜底：若依然异常（几乎全是陆地），返回全 False，避免把水体也清空
-        if ratio > 0.95:
-            try:
-                print("  [WARN] landmask: 占比异常(>95%)，兜底返回全 False 掩膜（无陆地）")
-            except Exception:
-                pass
-            return np.zeros((src.height, src.width), dtype=bool)
-
-    return mask.astype(bool)
+                from shapely import vectorized
+                inside = vectorized.contains(land_geom, lon, lat)
+            # NaN 安全
+            valid = np.isfinite(lon) & np.isfinite(lat)
+            mask[r0:r1, :] = np.where(valid, inside, False)
+    return mask
 
 def apply_landmask_to_landsat(ls_tif: Path, land_mask: np.ndarray, out_tif: Path):
     """对 Landsat 多波段 TIF 应用陆地掩膜：陆地 -> NoData/0。"""
@@ -349,10 +198,76 @@ def save_landsat_mask_compare(ls_src: Path, ls_masked: Path, out_png: Path, max_
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.suptitle("Landsat Landmask Compare (缩略图)", fontsize=12)
-    fig.savefig(out_png, dpi=150)
+    fig.suptitle("Landsat Landmask Compare ", fontsize=12)
+    fig.savefig(out_png, dpi=400)
     plt.close(fig)
     print(f"  [OK] 保存对比图 -> {out_png.name}")
+
+
+def save_goci_mask_compare(goci_src_nc: Path, goci_masked_nc: Path, out_png: Path, band_candidates=None):
+    """生成 GOCI 原始 vs 去陆地 的快速对比图（按一条代表性波段）。
+
+    - 优先使用 geophysical_data/L_TOA_443；若缺失，则按候选列表依次回退。
+    - 显示相同色标范围（基于 2–98 分位）。
+    """
+    if band_candidates is None:
+        band_candidates = ("L_TOA_443", "L_TOA_490", "L_TOA_555", "L_TOA_660", "L_TOA_865")
+
+    def _read_nc_one(nc_path: Path):
+        with Dataset(nc_path, "r") as ds:
+            nav = ds["navigation_data"] if "navigation_data" in ds.groups else ds
+            lat = np.array(nav["latitude"][:], dtype=np.float64)
+            lon = np.array(nav["longitude"][:], dtype=np.float64)
+            g = ds["geophysical_data"] if "geophysical_data" in ds.groups else ds
+            vname = None
+            for cand in band_candidates:
+                if cand in g.variables:
+                    vname = cand; break
+            if vname is None:
+                raise KeyError("GOCI 对比图未找到任何候选波段")
+            var = g[vname]
+            arr = var[:]
+            if np.ma.isMaskedArray(arr):
+                arr = arr.filled(np.nan).astype(np.float32)
+            else:
+                arr = np.array(arr, dtype=np.float32)
+            if "_FillValue" in var.ncattrs():
+                try:
+                    fv = float(np.array(var.getncattr("_FillValue")).ravel()[0])
+                    arr = np.where(arr == fv, np.nan, arr)
+                except Exception:
+                    pass
+        return lat, lon, arr, vname
+
+    lat0, lon0, a0, vname = _read_nc_one(goci_src_nc)
+    lat1, lon1, a1, _ = _read_nc_one(goci_masked_nc)
+
+    vmin, vmax = _robust_vmin_vmax([a0, a1])
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(alpha=0.0)
+
+    fig = plt.figure(figsize=(12, 5), dpi=150)
+    ax1 = fig.add_subplot(1, 2, 1)
+    im1 = ax1.pcolormesh(lon0, lat0, a0, shading="auto", vmin=vmin, vmax=vmax, cmap=cmap)
+    ax1.set_title(f"GOCI {vname} (original)")
+    ax1.set_xlabel("Longitude")
+    ax1.set_ylabel("Latitude")
+    ax1.grid(True, alpha=0.3)
+    fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.02)
+
+    ax2 = fig.add_subplot(1, 2, 2)
+    im2 = ax2.pcolormesh(lon1, lat1, a1, shading="auto", vmin=vmin, vmax=vmax, cmap=cmap)
+    ax2.set_title(f"GOCI {vname} (water-only)")
+    ax2.set_xlabel("Longitude")
+    ax2.set_ylabel("Latitude")
+    ax2.grid(True, alpha=0.3)
+    fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.02)
+
+    fig.tight_layout()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+    print(f"  [OK] 保存 GOCI 对比图 -> {out_png.name}")
 
 
 def save_binary_mask_gt(ls_tif: Path, land_mask: np.ndarray, out_tif: Path):
@@ -370,7 +285,12 @@ def landmask_for_goci_grid(nc_path: Path, land_shp: Path, buffer_deg=0.0) -> np.
     在 GOCI 弯曲网格（lat/lon）上构建陆地掩膜（True=陆地）。
     注意：Natural Earth 默认为 EPSG:4326，经纬度。GOCI 的 lat/lon 也是经纬度。
     """
-    gdf = gpd.read_file(land_shp)  # EPSG:4326
+    gdf = gpd.read_file(land_shp)
+    # 投影到经纬度
+    try:
+        gdf = gdf.to_crs("EPSG:4326")
+    except Exception:
+        pass
     # 修复无效几何，避免 union/buffer 失败
     def _make_valid(geom):
         try:
@@ -381,10 +301,8 @@ def landmask_for_goci_grid(nc_path: Path, land_shp: Path, buffer_deg=0.0) -> np.
                 return geom.buffer(0)
             except Exception:
                 return geom
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
-        gdf["geometry"] = gdf.geometry.apply(lambda g: _make_valid(g) if g is not None and not g.is_empty and not g.is_valid else g)
-        gdf = gdf[(~gdf.geometry.is_empty) & gdf.geometry.notna()]
+    gdf["geometry"] = gdf.geometry.apply(lambda g: _make_valid(g) if g is not None and not g.is_empty and not g.is_valid else g)
+    gdf = gdf[(~gdf.geometry.is_empty) & gdf.geometry.notna()]
     # union: 兼容新旧 API（union_all 优先）
     try:
         geom = gdf.union_all()
@@ -480,7 +398,7 @@ def main():
     if not NE_LAND_SHP.exists():
         raise FileNotFoundError(f"未找到陆地 shp：{NE_LAND_SHP}")
 
-    print(f"[INFO] 配对数量: {len(pairs)}  | 使用陆地矢量: {NE_LAND_SHP}")
+    # print(f"[INFO] 配对数量: {len(pairs)}  | 使用陆地矢量: {NE_LAND_SHP}")
     for scene, ls_tif, goci_nc in pairs:
         out_dir = MASKED_ROOT / scene
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -490,15 +408,8 @@ def main():
         print(f"  GOCI   : {goci_nc.name}")
 
         # 1) 在 Landsat 网格栅格化陆地 -> land_mask(True=land)
-        land_mask = landmask_for_landsat_grid_v2(
-            ls_tif, NE_LAND_SHP, all_touched=ALL_TOUCHED, buffer_m=BUFFER_M
-        )
-        # 简要汇报掩膜占比
-        try:
-            ratio = float(land_mask.mean()) if land_mask.size else 0.0
-            print(f"  [INFO] 最终陆地掩膜占比: {ratio*100:.2f}%")
-        except Exception:
-            pass
+        land_mask = landmask_for_landsat_grid_points(ls_tif, NE_LAND_SHP, tile_rows=1024)
+        # 可按需输出占比：ratio = float(land_mask.mean())
         # 2) 应用到 Landsat
         ls_out = out_dir / (ls_tif.stem + "_only_water.tif")
         apply_landmask_to_landsat(ls_tif, land_mask, ls_out)
@@ -521,6 +432,13 @@ def main():
         goci_out = out_dir / (goci_nc.stem + "_only_water.nc")
         apply_landmask_to_goci_nc(goci_nc, goci_land, goci_out)
         print(f"  [OK] GOCI 去陆地 -> {goci_out.name}")
+
+        # GOCI 对比图（原始 vs 去陆地）
+        try:
+            goci_cmp_png = out_dir / f"COMPARE_GOCI_mask_{scene}.png"
+            save_goci_mask_compare(goci_nc, goci_out, goci_cmp_png)
+        except Exception as e:
+            print(f"  [WARN] 生成 GOCI 对比图失败: {e}")
 
         # 4) 为与后续 03 重采样脚本无缝衔接：用 "仅水体" NC 覆盖 batch_outputs 中的原始 subset NC
         #    先做一次备份（*.bak），然后复制覆盖同名文件。

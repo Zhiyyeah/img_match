@@ -123,6 +123,14 @@ def save_patch_tif(dst_path: Path, arr: np.ndarray, like_ds: rasterio.DatasetRea
 
 
 def main():
+    # 调试：打印输入/输出根目录概览
+    print("[CONFIG] HR candidates: masked -> outputs")
+    print(f"[CONFIG] OUTPUT_ROOT={OUTPUT_ROOT.resolve() if OUTPUT_ROOT.exists() else OUTPUT_ROOT}")
+    print(f"[CONFIG] MASKED_ROOT={MASKED_ROOT.resolve() if MASKED_ROOT.exists() else MASKED_ROOT}")
+    print(f"[CONFIG] RESAMPLED_ROOT={RESAMPLED_ROOT.resolve() if RESAMPLED_ROOT.exists() else RESAMPLED_ROOT}")
+    print(f"[CONFIG] TIF out: HR={ (TIF_ROOT/'HR') }  LR={ (TIF_ROOT/'LR') }")
+    print(f"[CONFIG] NPY out: HR={ (NPY_ROOT/'HR') }  LR={ (NPY_ROOT/'LR') }")
+
     scenes = [d for d in sorted(OUTPUT_ROOT.iterdir()) if d.is_dir()]
     if not scenes:
         print(f"[WARN] 未在 {OUTPUT_ROOT} 发现场景目录")
@@ -155,9 +163,11 @@ def main():
             H = ds_hr.height
             W = ds_hr.width
             C_hr = ds_hr.count
+            print(f"  [INFO] HR dims: C={C_hr} H={H} W={W} CRS={ds_hr.crs}")
 
             # 打开 LR tif（必须与 HR 尺寸一致）
             ds_lr_handle = rasterio.open(goci_on_ls)
+            print(f"  [INFO] LR dims: C={ds_lr_handle.count} H={ds_lr_handle.height} W={ds_lr_handle.width} CRS={ds_lr_handle.crs}")
             if ds_lr_handle.height != H or ds_lr_handle.width != W:
                 print("  [ERR] GOCI_on_Landsat 尺寸与 HR 不一致，跳过场景")
                 ds_lr_handle.close()
@@ -166,6 +176,10 @@ def main():
             # 输出目录（TIF 按场景分，NPY 全局 HR/LR）
             hr_dir, lr_dir = ensure_dirs(sdir.name)
             hr_npy_dir, lr_npy_dir = ensure_npy_dirs()
+            print(f"  [OUT] TIF HR dir: {hr_dir}")
+            print(f"  [OUT] TIF LR dir: {lr_dir}")
+            print(f"  [OUT] NPY HR dir: {hr_npy_dir}")
+            print(f"  [OUT] NPY LR dir: {lr_npy_dir}")
 
             # 遍历窗口
             n_saved = 0
@@ -210,8 +224,6 @@ def main():
 
             # 总结输出（全局目录）
             print(f"  [OK] 保存 patches: {n_saved} 对 -> TIF:{TIF_ROOT}  NPY:{NPY_ROOT}")
-
-            print(f"  [OK] 保存 patches: {n_saved} 对 -> {PATCH_ROOT / sdir.name}")
 
 
 if __name__ == "__main__":

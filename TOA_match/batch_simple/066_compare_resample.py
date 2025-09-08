@@ -38,6 +38,7 @@ plt.rcParams.update({
 
 BATCH_OUTPUTS = Path("batch_outputs")
 BATCH_RESAMPLED = Path("batch_resampled")
+BATCH_MASKED = Path("batch_masked")  # 新增：去陆地后（水体-only）
 
 # 如果需要标注波长，可按重采样脚本中的顺序填写；若不确定可留空或修改
 # 与 GOCI_BANDS (443,490,555,660,865) 对应时：
@@ -47,10 +48,18 @@ PCT_LOW, PCT_HIGH = 2, 98   # 影像显示拉伸百分位
 MAX_SCENES = None            # 设为整数可限制处理场景数；None 处理全部
 COLORBAR_UNIT = "W m$^{-2}$ sr$^{-1}$ μm$^{-1}$"  # Radiance 单位（可按实际修改）
 
-def find_landsat_tif(scene_dir: Path) -> Path | None:
-    for f in scene_dir.iterdir():
-        if f.suffix.lower()==".tif" and "_TOA_RAD_B" in f.name:
-            return f
+def find_landsat_tif(scene: str) -> Path | None:
+    """优先在 batch_masked/{scene} 中寻找 *_only_water.tif（多波段），回退到 batch_outputs/{scene} 原始。"""
+    d_mask = BATCH_MASKED / scene
+    if d_mask.exists():
+        cands = [p for p in d_mask.iterdir() if p.suffix.lower()=='.tif' and p.name.endswith('_only_water.tif')]
+        if cands:
+            return cands[0]
+    d_out = BATCH_OUTPUTS / scene
+    if d_out.exists():
+        for f in d_out.iterdir():
+            if f.suffix.lower()==".tif" and "_TOA_RAD_B" in f.name:
+                return f
     return None
 
 def find_goci_tif(resampled_dir: Path) -> Path | None:
@@ -81,6 +90,7 @@ def plot_band(
     out_png: Path,
     wavelength: str | None,
     extent: tuple[float, float, float, float] | None,
+    water_only: bool = True,
 ):
     """两幅影像上排（各自右侧竖直色标），下排直方图。两幅影像都显示 X/Y 轴。"""
     from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -123,8 +133,9 @@ def plot_band(
     im1 = ax_g_img.imshow(g_band, **im_kwargs)
 
     band_title = f"B{b_idx+1}" + (f" ({wavelength})" if wavelength else "")
-    ax_ls_img.set_title(f"Landsat {band_title}", fontsize=12.5, pad=6)
-    ax_g_img.set_title(f"GOCI {band_title}", fontsize=12.5, pad=6)
+    suffix = " (water-only)" if water_only else ""
+    ax_ls_img.set_title(f"Landsat {band_title}{suffix}", fontsize=12.5, pad=6)
+    ax_g_img.set_title(f"GOCI {band_title}{suffix}", fontsize=12.5, pad=6)
 
     # 两幅图均显示 X/Y 轴标签与刻度
     if extent is not None:
@@ -181,7 +192,7 @@ def plot_band(
     # —— 总标题与边距
     # 提高总标题的位置，同时把子图整体下移，避免与子图标题重叠
     fig.suptitle(
-        f"{scene}  Band {b_idx+1}" + (f" / {wavelength}" if wavelength else ""),
+        f"{scene}  Band {b_idx+1}" + (f" / {wavelength}" if wavelength else "") + ("  (Land-masked / Water-only)" if water_only else ""),
         fontsize=13, y=0.985
     )
     # 收紧左右边距以增大有效绘图宽度；降低 top 使上排标题与总标题不重合
@@ -208,10 +219,9 @@ def main():
         if goci_tif is None:
             print(f"[SKIP] {scene} 缺少 GOCI 重采样 TIF")
             continue
-        ls_dir = BATCH_OUTPUTS / scene
-        ls_tif = find_landsat_tif(ls_dir)
+        ls_tif = find_landsat_tif(scene)
         if ls_tif is None:
-            print(f"[SKIP] {scene} 缺少 Landsat TIF")
+            print(f"[SKIP] {scene} 缺少 Landsat 去陆地或原始 TIF")
             continue 
 
         print(f"[SCENE] {scene}")
@@ -256,11 +266,24 @@ def main():
 
         if ls_arr.shape != g_arr.shape:
             print(f"  尺寸不匹配 Landsat{ls_arr.shape} vs GOCI{g_arr.shape}，尝试按最小波段数对齐。")
+
+        # ---- 应用水体掩膜到 GOCI (若 Landsat 文件已去陆地) ----
+        water_only_flag = False
+        if ls_tif.name.endswith('_only_water.tif') or 'only_water' in ls_tif.name:
+            # 取第一波段有限像素作为水体区域
+            water_mask = np.isfinite(ls_arr[0])
+            # 若 Landsat 是全部有限，则说明并非真正掩膜
+            if not np.all(water_mask):
+                g_arr[:, ~water_mask] = np.nan  # 同步裁剪/掩膜
+                water_only_flag = True
+        else:
+            water_only_flag = False
+
         B = min(ls_arr.shape[0], g_arr.shape[0])
         for b in range(B):
             wav = WAVELENGTHS[b] if b < len(WAVELENGTHS) else None
-            out_png = out_dir / f"HIST_COMPARE_B{b+1}_{scene}.png"
-            plot_band(scene, b, ls_arr[b], g_arr[b], out_png, wav, extent)
+            out_png = out_dir / f"HIST_COMPARE_WATERONLY_B{b+1}_{scene}.png"
+            plot_band(scene, b, ls_arr[b], g_arr[b], out_png, wav, extent, water_only=water_only_flag)
         print(f"  完成 {B} 个波段。")
 
 if __name__ == "__main__":

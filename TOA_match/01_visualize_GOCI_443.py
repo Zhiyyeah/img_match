@@ -3,21 +3,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # 文件路径
-file_path = "SR_Imagery/GK2_GOCI2_L1B_20250504_021530_LA_S007.nc"
+file_path = "D:\Py_Code\img_match\SR_Imagery\Slot_7_2021_2025\GK2_GOCI2_L1B_20210330_021530_LA_S007.nc"
 
 # 读取文件
 with nc.Dataset(file_path, 'r') as dataset:
-    # 查找L_TOA_443变量
-    if 'L_TOA_443' in dataset.variables:
-        data = dataset.variables['L_TOA_443'][:]
+    # 查找L_TOA_490变量
+    if 'L_TOA_490' in dataset.variables:
+        data = dataset.variables['L_TOA_490'][:]
     else:
         # 在组中查找
         for group in dataset.groups.values():
-            if 'L_TOA_443' in group.variables:
-                data = group.variables['L_TOA_443'][:]
+            if 'L_TOA_490' in group.variables:
+                data = group.variables['L_TOA_490'][:]
                 break
         else:
-            print("未找到L_TOA_443变量")
+            print("未找到L_TOA_490变量")
             exit()
     
     # 读取经纬度信息
@@ -57,15 +57,15 @@ plt.figure(figsize=(8, 6))
 if lat is not None and lon is not None:
     # 使用经纬度范围显示
     extent = [lon.min(), lon.max(), lat.min(), lat.max()]
-    im = plt.imshow(data, cmap='viridis', vmin=50, vmax=100, extent=extent, aspect='auto')
-    plt.title('L_TOA_443 Band')
+    im = plt.imshow(data, cmap='viridis', vmin=65, vmax=120, extent=extent, aspect='auto')
+    plt.title('L_TOA_490 Band')
     plt.colorbar(im, label='TOA Radiance')
     plt.xlabel('Longitude')
     plt.ylabel('Latitude')
 else:
     # 如果没有经纬度，使用像素索引
     im = plt.imshow(data, cmap='viridis', vmin=0, vmax=99)
-    plt.title('L_TOA_443 Band')
+    plt.title('L_TOA_490 Band')
     plt.colorbar(im, label='TOA Radiance')
     plt.xlabel('Column Index')
     plt.ylabel('Row Index')

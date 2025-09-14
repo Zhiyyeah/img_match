@@ -15,7 +15,7 @@ from netCDF4 import Dataset, num2date
 print(os.getcwd())
 
 # 配置：固定根目录与时间容差（分钟）
-ROOT = Path("SR_Imagery\Slot_7_2021_2025")
+ROOT = Path(r"D:\Py_Code\img_match\SR_Imagery\118_038_2021_2025")
 TIME_TOL_MIN = 40
 
 # 正则用于从文件名回退解析日期

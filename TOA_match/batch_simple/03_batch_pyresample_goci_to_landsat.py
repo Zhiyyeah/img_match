@@ -28,7 +28,7 @@ from pyresample import geometry, kd_tree
 
 # ---------------- 配置（按需修改） ----------------
 # 输入：02 批处理产生的根目录（子目录为各 Landsat 场景）
-OUTPUT_ROOT = Path("batch_outputs")
+OUTPUT_ROOT = Path("batch_cal_clip")
 
 # 输出：重采样结果根目录（按场景分子目录）
 RESAMPLED_ROOT = Path("batch_resampled")

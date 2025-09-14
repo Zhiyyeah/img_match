@@ -26,7 +26,7 @@ from rasterio.windows import Window
 
 
 # 目录配置
-OUTPUT_ROOT = Path("batch_outputs")
+OUTPUT_ROOT = Path("batch_cal_clip")
 RESAMPLED_ROOT = Path("batch_resampled")
 MASKED_ROOT = Path("batch_masked")  # 03.5 输出目录（可选）
 TIF_ROOT = Path("SR_Imagery") / "tif"

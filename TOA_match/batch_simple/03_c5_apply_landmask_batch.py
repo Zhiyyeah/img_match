@@ -23,7 +23,7 @@ from rasterio.enums import Resampling
 from pyproj import Transformer
 
 # ----------------- 配置（按需修改） -----------------
-OUTPUT_ROOT   = Path("batch_outputs")    # 你的 02 脚本输出根目录
+OUTPUT_ROOT   = Path("batch_cal_clip")    # 你的 02 脚本输出根目录
 MASKED_ROOT   = Path("batch_masked")     # 去陆地后的输出根目录
 NE_LAND_SHP   = Path("TOA_match/batch_simple/ne_10m_land/ne_10m_land.shp")  # 或解压到此处
 WRITE_MASK_GT = True   # 是否另存一张 Landsat 网格的二值陆地掩膜 GeoTIFF
